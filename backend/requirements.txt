@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+websockets
+mediapipe
+Pillow
+pillow-heif
+ruff
+pytest

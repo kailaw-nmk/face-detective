@@ -48,7 +48,7 @@ function App() {
    * スキャンを開始する。
    * POST /api/start を呼び出し、取得した job_id で WebSocket 接続を開始する。
    */
-  const handleStart = async (source: string, threshold: number) => {
+  const handleStart = async (source: string, threshold: number, spreadSplit: boolean) => {
     setStopError(null)
     setProgress(null)
     setResult(null)
@@ -57,7 +57,7 @@ function App() {
       const response = await fetch('/api/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source_folder: source, threshold }),
+        body: JSON.stringify({ source_folder: source, threshold, spread_split: spreadSplit }),
       })
 
       if (!response.ok) {

@@ -4,7 +4,7 @@ import type { ValidatePathResponse } from '../types'
 /** SettingsForm コンポーネントの Props */
 interface SettingsFormProps {
   /** スキャン開始時のコールバック */
-  onStart: (source: string, threshold: number) => void
+  onStart: (source: string, threshold: number, spreadSplit: boolean) => void
   /** フォームを無効化するフラグ（スキャン中など） */
   disabled: boolean
 }
@@ -28,6 +28,9 @@ function SettingsForm({ onStart, disabled }: SettingsFormProps) {
     const saved = localStorage.getItem('face-detective-threshold')
     const parsed = saved !== null ? Number(saved) : NaN
     return Number.isFinite(parsed) && parsed >= 1 && parsed <= 100 ? parsed : 5
+  })
+  const [spreadSplit, setSpreadSplit] = useState(() => {
+    return localStorage.getItem('face-detective-spreadSplit') === 'true'
   })
   const [validation, setValidation] = useState<ValidationState>({ status: 'idle' })
 
@@ -75,8 +78,9 @@ function SettingsForm({ onStart, disabled }: SettingsFormProps) {
 
     localStorage.setItem('face-detective-sourcePath', sourcePath.trim())
     localStorage.setItem('face-detective-threshold', String(threshold))
+    localStorage.setItem('face-detective-spreadSplit', String(spreadSplit))
 
-    onStart(sourcePath.trim(), threshold)
+    onStart(sourcePath.trim(), threshold, spreadSplit)
   }
 
   const isSourceValidated = validation.status === 'valid'
@@ -152,6 +156,23 @@ function SettingsForm({ onStart, disabled }: SettingsFormProps) {
           <span>1%（小さい顔も対象）</span>
           <span>100%（顔で埋まった画像のみ）</span>
         </div>
+      </div>
+
+      {/* 見開き分割オプション */}
+      <div className="space-y-1">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={spreadSplit}
+            onChange={(e) => setSpreadSplit(e.target.checked)}
+            disabled={disabled}
+            className="w-4 h-4 text-blue-500 rounded border-gray-300 focus:ring-blue-500 disabled:cursor-not-allowed"
+          />
+          <span className="text-sm font-medium text-gray-700">見開き分割を実行</span>
+        </label>
+        <p className="text-xs text-gray-400 ml-6">
+          見開き画像の中央ストライプを検出し、2つの顔が検出された場合に左右に分割します
+        </p>
       </div>
 
       {/* 送信ボタン */}

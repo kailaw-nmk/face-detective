@@ -21,6 +21,7 @@ function ResultSummary({ result, onReset }: ResultSummaryProps) {
   const extracted = result?.extracted ?? 0
   const skipped = result?.skipped ?? 0
   const errors = result?.errors ?? 0
+  const splitCount = result?.split_count ?? 0
   const errorFiles = result?.error_files ?? []
 
   return (
@@ -45,6 +46,15 @@ function ResultSummary({ result, onReset }: ResultSummaryProps) {
           color="text-gray-800"
           bgColor="bg-gray-50"
         />
+        {splitCount > 0 && (
+          <ResultCard
+            label="分割"
+            value={splitCount}
+            unit="件"
+            color="text-purple-600"
+            bgColor="bg-purple-50"
+          />
+        )}
         <ResultCard
           label="抽出"
           value={extracted}

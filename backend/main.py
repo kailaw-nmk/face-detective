@@ -84,6 +84,7 @@ class StartJobRequest(BaseModel):
 
     source_folder: str
     threshold: float
+    spread_split: bool = False
 
 
 class StartJobResponse(BaseModel):
@@ -171,13 +172,15 @@ async def start_job(request: StartJobRequest) -> StartJobResponse:
     job_id, dest_folder = job_manager.register_job(
         source_folder=request.source_folder,
         threshold=request.threshold,
+        spread_split=request.spread_split,
     )
     logger.info(
-        "ジョブ登録: job_id=%s, src=%s, dest=%s, threshold=%.1f",
+        "ジョブ登録: job_id=%s, src=%s, dest=%s, threshold=%.1f, spread_split=%s",
         job_id,
         request.source_folder,
         dest_folder,
         request.threshold,
+        request.spread_split,
     )
     return StartJobResponse(job_id=job_id, dest_folder=dest_folder)
 
@@ -254,6 +257,7 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str) -> None:
         threshold=pending["threshold"],
         send_message=send_message,
         job_id=job_id,
+        spread_split=pending.get("spread_split", False),
     )
 
     logger.info("ジョブ実行開始: job_id=%s", job_id)

@@ -55,12 +55,22 @@ function ProgressPanel({ progress }: ProgressPanelProps) {
       </div>
 
       {/* 統計グリッド */}
-      <div className="grid grid-cols-4 gap-3">
-        <StatCard label="スキャン済み" value={progress?.processed ?? 0} color="text-gray-800" />
-        <StatCard label="抽出" value={progress?.extracted ?? 0} color="text-green-600" />
-        <StatCard label="スキップ" value={progress?.skipped ?? 0} color="text-yellow-600" />
-        <StatCard label="エラー" value={progress?.errors ?? 0} color="text-red-600" />
-      </div>
+      {(progress?.split_count ?? 0) > 0 ? (
+        <div className="grid grid-cols-5 gap-3">
+          <StatCard label="スキャン済み" value={progress?.processed ?? 0} color="text-gray-800" />
+          <StatCard label="分割" value={progress?.split_count ?? 0} color="text-purple-600" />
+          <StatCard label="抽出" value={progress?.extracted ?? 0} color="text-green-600" />
+          <StatCard label="スキップ" value={progress?.skipped ?? 0} color="text-yellow-600" />
+          <StatCard label="エラー" value={progress?.errors ?? 0} color="text-red-600" />
+        </div>
+      ) : (
+        <div className="grid grid-cols-4 gap-3">
+          <StatCard label="スキャン済み" value={progress?.processed ?? 0} color="text-gray-800" />
+          <StatCard label="抽出" value={progress?.extracted ?? 0} color="text-green-600" />
+          <StatCard label="スキップ" value={progress?.skipped ?? 0} color="text-yellow-600" />
+          <StatCard label="エラー" value={progress?.errors ?? 0} color="text-red-600" />
+        </div>
+      )}
     </div>
   )
 }

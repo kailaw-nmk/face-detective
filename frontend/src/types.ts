@@ -11,6 +11,7 @@ export type ProgressMessage = {
   extracted: number
   skipped: number
   errors: number
+  split_count?: number
 }
 
 /** 処理完了メッセージ */
@@ -20,6 +21,7 @@ export type CompleteMessage = {
   extracted: number
   skipped: number
   errors: number
+  split_count?: number
   error_files: string[]
 }
 

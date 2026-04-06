@@ -10,9 +10,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from face_detector import detect_faces
+from face_detector import detect_faces, detect_faces_from_array
 from file_scanner import scan_folder
-from image_copier import copy_image, generate_dest_folder
+from image_copier import copy_image, generate_dest_folder, save_spread_image
+from person_detector import count_persons
+from spread_splitter import process_spread
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +28,7 @@ class JobState:
         source_folder: Path,
         dest_folder: Path,
         threshold: float,
+        spread_split: bool = False,
     ) -> None:
         """ジョブ状態を初期化する。
 
@@ -34,11 +37,13 @@ class JobState:
             source_folder: 走査対象フォルダ。
             dest_folder: 画像移動先フォルダ。
             threshold: 顔面積比の閾値 (%)。
+            spread_split: 見開き分割を有効にするかどうか。
         """
         self.job_id = job_id
         self.source_folder = source_folder
         self.dest_folder = dest_folder
         self.threshold = threshold
+        self.spread_split = spread_split
 
         self.status: str = "running"
         self.total: int = 0
@@ -46,6 +51,7 @@ class JobState:
         self.extracted: int = 0
         self.skipped: int = 0
         self.errors: int = 0
+        self.split_count: int = 0
         self.error_files: list[str] = []
         self.current_file: str = ""
         self.cancelled: bool = False
@@ -64,6 +70,7 @@ class JobState:
             "extracted": self.extracted,
             "skipped": self.skipped,
             "errors": self.errors,
+            "split_count": self.split_count,
             "error_files": self.error_files,
             "current_file": self.current_file,
         }
@@ -81,6 +88,7 @@ class JobManager:
         self,
         source_folder: str,
         threshold: float,
+        spread_split: bool = False,
     ) -> tuple[str, str]:
         """ジョブをペンディング状態で登録し、(job_id, dest_folder) を返す。
 
@@ -90,6 +98,7 @@ class JobManager:
         Args:
             source_folder: 走査対象フォルダのパス文字列。
             threshold: 顔面積比の閾値 (%)。
+            spread_split: 見開き分割を有効にするかどうか。
 
         Returns:
             登録されたジョブ ID 文字列と、自動生成された保存先フォルダパス文字列のタプル。
@@ -100,6 +109,7 @@ class JobManager:
             "source_folder": source_folder,
             "dest_folder": dest_folder,
             "threshold": threshold,
+            "spread_split": spread_split,
         }
         logger.info("ジョブを登録しました (pending): job_id=%s", job_id)
         return job_id, dest_folder
@@ -111,6 +121,7 @@ class JobManager:
         threshold: float,
         send_message: Any,
         job_id: str | None = None,
+        spread_split: bool = False,
     ) -> str:
         """新規ジョブを作成して非同期タスクとして起動する。
 
@@ -121,6 +132,7 @@ class JobManager:
             send_message: WebSocket へメッセージを送信するコルーチン関数。
                           引数として JSON 文字列を受け取る。
             job_id: 使用するジョブ ID。None の場合は新規 UUID を生成する。
+            spread_split: 見開き分割を有効にするかどうか。
 
         Returns:
             ジョブ ID 文字列。
@@ -132,9 +144,10 @@ class JobManager:
             source_folder=Path(source_folder),
             dest_folder=Path(dest_folder),
             threshold=threshold,
+            spread_split=spread_split,
         )
         self._jobs[job_id] = state
-        logger.info("ジョブを開始します: job_id=%s", job_id)
+        logger.info("ジョブを開始します: job_id=%s, spread_split=%s", job_id, spread_split)
 
         asyncio.create_task(self._run_job(state, send_message))
         return job_id
@@ -214,13 +227,19 @@ class JobManager:
             state.current_file = str(file_path)
 
             try:
-                result = detect_faces(file_path, state.threshold)
-
-                if result["should_move"]:
-                    copy_image(file_path, state.source_folder, state.dest_folder)
-                    state.extracted += 1
+                if state.spread_split:
+                    self._process_spread_file(state, file_path)
                 else:
-                    state.skipped += 1
+                    result = detect_faces(file_path, state.threshold)
+
+                    if result["should_move"]:
+                        copy_image(
+                            file_path, state.source_folder, state.dest_folder,
+                            face_ratio=result["max_face_ratio"],
+                        )
+                        state.extracted += 1
+                    else:
+                        state.skipped += 1
 
             except Exception as exc:
                 logger.error(
@@ -244,6 +263,7 @@ class JobManager:
                     "extracted": state.extracted,
                     "skipped": state.skipped,
                     "errors": state.errors,
+                    "split_count": state.split_count,
                 },
                 ensure_ascii=False,
             )
@@ -266,6 +286,7 @@ class JobManager:
                 "extracted": state.extracted,
                 "skipped": state.skipped,
                 "errors": state.errors,
+                "split_count": state.split_count,
                 "error_files": state.error_files,
             },
             ensure_ascii=False,
@@ -278,10 +299,42 @@ class JobManager:
             )
 
         logger.info(
-            "ジョブ完了: job_id=%s, 合計=%d, 抽出=%d, スキップ=%d, エラー=%d",
+            "ジョブ完了: job_id=%s, 合計=%d, 抽出=%d, スキップ=%d, 分割=%d, エラー=%d",
             state.job_id,
             state.total,
             state.extracted,
             state.skipped,
+            state.split_count,
             state.errors,
         )
+
+    def _process_spread_file(self, state: JobState, file_path: Path) -> None:
+        """人物検出で見開き分割を行い、各画像に顔検出・コピーを適用する。
+
+        Args:
+            state: 実行中のジョブ状態オブジェクト。
+            file_path: 処理対象の画像ファイルパス。
+        """
+        import numpy as np
+
+        spread_result = process_spread(file_path, count_persons)
+
+        if spread_result["action"] == "split":
+            state.split_count += 1
+
+        for img, suffix in zip(spread_result["images"], spread_result["suffixes"]):
+            # 各画像（分割後 or 非分割）で顔検出して閾値判定する
+            image_array = np.array(img, dtype=np.uint8)
+            face_result = detect_faces_from_array(
+                image_array, img.width, img.height, state.threshold
+            )
+
+            if face_result["should_move"]:
+                save_spread_image(
+                    img, file_path, suffix,
+                    state.source_folder, state.dest_folder,
+                    face_ratio=face_result["max_face_ratio"],
+                )
+                state.extracted += 1
+            else:
+                state.skipped += 1

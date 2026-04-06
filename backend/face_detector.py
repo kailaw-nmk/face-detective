@@ -112,14 +112,78 @@ def _run_full_range(image_array: np.ndarray, image_width: int, image_height: int
     return faces
 
 
-def detect_faces(image_path: Path, threshold: float) -> FaceDetectionResult:
-    """画像ファイルから顔を検出し、面積比と移動判定を返す。
+def detect_faces_from_array(
+    image_array: np.ndarray,
+    image_width: int,
+    image_height: int,
+    threshold: float,
+) -> FaceDetectionResult:
+    """numpy配列として渡された画像から顔を検出し、面積比と移動判定を返す。
 
     面積比は「最大顔のバウンディングボックス面積 / 画像全体面積 × 100」で計算する。
     面積比が threshold 以上の場合、should_move が True となる。
 
     short-range モデルで検出を試み、顔が見つからない場合は
     full-range モデルでフォールバック検出を行う。
+
+    Args:
+        image_array: RGB画像のnumpy配列（dtype=uint8）。
+        image_width: 画像の幅（ピクセル）。
+        image_height: 画像の高さ（ピクセル）。
+        threshold: 移動判定に使用する面積比の閾値（0〜100）。
+
+    Returns:
+        検出結果を含む辞書:
+            - has_face (bool): 顔が1件以上検出されたか。
+            - max_face_ratio (float): 最大顔面積比 (%)。
+            - face_count (int): 検出された顔の数。
+            - should_move (bool): 面積比が閾値以上かどうか。
+    """
+    try:
+        image_area = image_width * image_height
+        if image_area == 0:
+            logger.warning("画像面積が0です (width=%d, height=%d)", image_width, image_height)
+            return _no_face_result()
+
+        faces = _run_short_range(image_array)
+
+        if not faces:
+            logger.debug("short-rangeで未検出、full-rangeで再試行します")
+            faces = _run_full_range(image_array, image_width, image_height)
+
+        if not faces:
+            logger.debug("顔が検出されませんでした")
+            return _no_face_result()
+
+        face_count = len(faces)
+        max_face_area = max(w * h for _, _, w, h in faces)
+        max_face_ratio = (max_face_area / image_area) * 100.0
+        should_move = max_face_ratio >= threshold
+
+        logger.debug(
+            "顔検出完了 — 顔数=%d, 最大面積比=%.2f%%, 移動=%s",
+            face_count,
+            max_face_ratio,
+            should_move,
+        )
+
+        return FaceDetectionResult(
+            has_face=True,
+            max_face_ratio=max_face_ratio,
+            face_count=face_count,
+            should_move=should_move,
+        )
+
+    except Exception as exc:
+        logger.error("顔検出中にエラーが発生しました — %s", exc, exc_info=True)
+        return _no_face_result()
+
+
+def detect_faces(image_path: Path, threshold: float) -> FaceDetectionResult:
+    """画像ファイルから顔を検出し、面積比と移動判定を返す。
+
+    画像ファイルを開いてRGB numpy配列に変換したうえで
+    :func:`detect_faces_from_array` に処理を委譲する。
 
     Args:
         image_path: 検出対象の画像ファイルパス。
@@ -136,49 +200,24 @@ def detect_faces(image_path: Path, threshold: float) -> FaceDetectionResult:
         with Image.open(image_path) as img:
             rgb_image = img.convert("RGB")
             image_width, image_height = rgb_image.size
-            image_area = image_width * image_height
-
-            if image_area == 0:
-                logger.warning("画像面積が0です: %s", image_path)
-                return _no_face_result()
-
             image_array = np.array(rgb_image, dtype=np.uint8)
+    except Exception as exc:
+        logger.error(
+            "画像の読み込みに失敗しました: %s — %s", image_path, exc, exc_info=True
+        )
+        return _no_face_result()
 
-        faces = _run_short_range(image_array)
+    result = detect_faces_from_array(image_array, image_width, image_height, threshold)
 
-        if not faces:
-            logger.debug(
-                "short-rangeで未検出、full-rangeで再試行: %s", image_path
-            )
-            faces = _run_full_range(image_array, image_width, image_height)
-
-        if not faces:
-            logger.debug("顔が検出されませんでした: %s", image_path)
-            return _no_face_result()
-
-        face_count = len(faces)
-        max_face_area = max(w * h for _, _, w, h in faces)
-
-        max_face_ratio = (max_face_area / image_area) * 100.0
-        should_move = max_face_ratio >= threshold
-
+    if result["has_face"]:
         logger.debug(
             "顔検出完了: %s — 顔数=%d, 最大面積比=%.2f%%, 移動=%s",
             image_path,
-            face_count,
-            max_face_ratio,
-            should_move,
+            result["face_count"],
+            result["max_face_ratio"],
+            result["should_move"],
         )
+    else:
+        logger.debug("顔が検出されませんでした: %s", image_path)
 
-        return FaceDetectionResult(
-            has_face=True,
-            max_face_ratio=max_face_ratio,
-            face_count=face_count,
-            should_move=should_move,
-        )
-
-    except Exception as exc:
-        logger.error(
-            "顔検出中にエラーが発生しました: %s — %s", image_path, exc, exc_info=True
-        )
-        return _no_face_result()
+    return result

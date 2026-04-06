@@ -44,6 +44,25 @@ sys.modules["mediapipe"] = _mp_stub
 sys.modules["mediapipe.tasks"] = _tasks_stub
 sys.modules["mediapipe.tasks.vision"] = _vision_stub
 
+# ---------------------------------------------------------------------------
+# pillow-heif スタブ
+# ---------------------------------------------------------------------------
+# テスト環境では pillow-heif がインストールされていない場合があるため、
+# 必要最低限のスタブを差し込む。
+# ---------------------------------------------------------------------------
+if "pillow_heif" not in sys.modules:
+    _heif_stub = types.ModuleType("pillow_heif")
+    _heif_stub.register_heif_opener = lambda: None  # type: ignore[attr-defined]
+    sys.modules["pillow_heif"] = _heif_stub
+
+# ---------------------------------------------------------------------------
+# ultralytics スタブ
+# ---------------------------------------------------------------------------
+if "ultralytics" not in sys.modules:
+    _ultra_stub = types.ModuleType("ultralytics")
+    _ultra_stub.YOLO = MagicMock()  # type: ignore[attr-defined]
+    sys.modules["ultralytics"] = _ultra_stub
+
 
 @pytest.fixture()
 def tmp_source_dir(tmp_path: Path) -> Path:

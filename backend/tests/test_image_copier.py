@@ -68,19 +68,19 @@ class TestCopyImageBasic:
         """copy_image が実際のコピー先パスを返すことを確認する。"""
         src = _create_image_file(tmp_source_dir / "image.png")
 
-        result_path = copy_image(src, tmp_source_dir, tmp_dest_dir)
+        result_path = copy_image(src, tmp_source_dir, tmp_dest_dir, face_ratio=12.5)
 
-        assert result_path == tmp_dest_dir / "image.png"
+        assert result_path == tmp_dest_dir / "image_12.5pct.png"
 
     def test_copy_image_preserves_filename(
         self, tmp_source_dir: Path, tmp_dest_dir: Path
     ) -> None:
-        """重複がない場合にファイル名が保持されることを確認する。"""
+        """ファイル名に顔面積比が付与されることを確認する。"""
         src = _create_image_file(tmp_source_dir / "myphoto.jpeg")
 
-        result_path = copy_image(src, tmp_source_dir, tmp_dest_dir)
+        result_path = copy_image(src, tmp_source_dir, tmp_dest_dir, face_ratio=5.3)
 
-        assert result_path.name == "myphoto.jpeg"
+        assert result_path.name == "myphoto_5.3pct.jpeg"
 
     def test_copy_image_preserves_content(
         self, tmp_source_dir: Path, tmp_dest_dir: Path
@@ -106,7 +106,7 @@ class TestCopyImagePreservesStructure:
 
         result_path = copy_image(src, tmp_source_dir, tmp_dest_dir)
 
-        assert result_path == tmp_dest_dir / "2024" / "photo.jpg"
+        assert result_path == tmp_dest_dir / "2024" / "photo_0.0pct.jpg"
         assert result_path.exists()
 
     def test_preserves_nested_subfolders(
@@ -119,7 +119,7 @@ class TestCopyImagePreservesStructure:
 
         result_path = copy_image(src, tmp_source_dir, tmp_dest_dir)
 
-        assert result_path == tmp_dest_dir / "2024" / "vacation" / "beach" / "img.jpg"
+        assert result_path == tmp_dest_dir / "2024" / "vacation" / "beach" / "img_0.0pct.jpg"
         assert result_path.exists()
 
     def test_creates_intermediate_directories(
@@ -142,8 +142,8 @@ class TestCopyImagePreservesStructure:
         result1 = copy_image(src1, tmp_source_dir, tmp_dest_dir)
         result2 = copy_image(src2, tmp_source_dir, tmp_dest_dir)
 
-        assert result1 == tmp_dest_dir / "2024" / "a.jpg"
-        assert result2 == tmp_dest_dir / "2025" / "b.jpg"
+        assert result1 == tmp_dest_dir / "2024" / "a_0.0pct.jpg"
+        assert result2 == tmp_dest_dir / "2025" / "b_0.0pct.jpg"
         assert result1.exists()
         assert result2.exists()
 
@@ -154,13 +154,13 @@ class TestCopyImageRenameOnConflict:
     def test_rename_on_conflict(
         self, tmp_source_dir: Path, tmp_dest_dir: Path
     ) -> None:
-        """コピー先に同名ファイルが存在する場合 {stem}_001.{ext} にリネームされることを確認する。"""
-        _create_image_file(tmp_dest_dir / "photo.jpg")
+        """コピー先に同名ファイルが存在する場合にリネームされることを確認する。"""
+        _create_image_file(tmp_dest_dir / "photo_0.0pct.jpg")
         src = _create_image_file(tmp_source_dir / "photo.jpg")
 
         result_path = copy_image(src, tmp_source_dir, tmp_dest_dir)
 
-        assert result_path.name == "photo_001.jpg"
+        assert result_path.name == "photo_0.0pct_001.jpg"
         assert result_path.exists()
         assert src.exists()  # コピーなので元ファイルは残る
 
@@ -168,15 +168,15 @@ class TestCopyImageRenameOnConflict:
         self, tmp_source_dir: Path, tmp_dest_dir: Path
     ) -> None:
         """複数の重複がある場合に連番が正しくインクリメントされることを確認する。"""
-        _create_image_file(tmp_dest_dir / "photo.jpg")
-        _create_image_file(tmp_dest_dir / "photo_001.jpg")
-        _create_image_file(tmp_dest_dir / "photo_002.jpg")
+        _create_image_file(tmp_dest_dir / "photo_0.0pct.jpg")
+        _create_image_file(tmp_dest_dir / "photo_0.0pct_001.jpg")
+        _create_image_file(tmp_dest_dir / "photo_0.0pct_002.jpg")
 
         src = _create_image_file(tmp_source_dir / "photo.jpg")
 
         result_path = copy_image(src, tmp_source_dir, tmp_dest_dir)
 
-        assert result_path.name == "photo_003.jpg"
+        assert result_path.name == "photo_0.0pct_003.jpg"
         assert result_path.exists()
 
     def test_conflict_preserves_extension(

@@ -14,3 +14,6 @@ build/
 .claude/
 .mcp.json
 backend/logs/
+
+# YOLOv8 モデルファイル（自動ダウンロード）
+*.pt

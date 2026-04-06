@@ -32,6 +32,7 @@ def copy_image(
     source_root: Path,
     dest_root: Path,
     face_ratio: float = 0.0,
+    both_eyes_visible: bool = False,
 ) -> Path:
     """画像ファイルをサブフォルダ構成を保持したまま保存先へコピーする。
 
@@ -61,17 +62,19 @@ def copy_image(
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # ファイル名に顔面積比を付与する
+    # ファイル名に顔面積比と両目タグを付与する
     stem = dest_path.stem
     ext = dest_path.suffix
     ratio_tag = f"_{face_ratio:.1f}pct"
+    eye_tag = "_eye" if both_eyes_visible else ""
+    tag = f"{ratio_tag}{eye_tag}"
     dest_dir = dest_path.parent
-    dest_path = dest_dir / f"{stem}{ratio_tag}{ext}"
+    dest_path = dest_dir / f"{stem}{tag}{ext}"
 
     if dest_path.exists():
         counter = 1
         while True:
-            new_name = f"{stem}{ratio_tag}_{counter:03d}{ext}"
+            new_name = f"{stem}{tag}_{counter:03d}{ext}"
             dest_path = dest_dir / new_name
             if not dest_path.exists():
                 break
@@ -92,6 +95,7 @@ def save_spread_image(
     source_root: Path,
     dest_root: Path,
     face_ratio: float = 0.0,
+    both_eyes_visible: bool = False,
 ) -> Path:
     """Pillow Image を保存先フォルダに直接書き出す。
 
@@ -105,6 +109,7 @@ def save_spread_image(
         source_root: 走査対象の基底フォルダ。
         dest_root: 保存先の基底フォルダ。
         face_ratio: 顔面積比 (%)。ファイル名末尾に付与する。
+        both_eyes_visible: 両目が映っているかどうか。True の場合 _eye を付与。
 
     Returns:
         実際に保存されたファイルパス。
@@ -116,19 +121,21 @@ def save_spread_image(
     stem = original_path.stem
     ext = original_path.suffix
     ratio_tag = f"_{face_ratio:.1f}pct"
-    dest_path = dest_dir / f"{stem}{suffix}{ratio_tag}{ext}"
+    eye_tag = "_eye" if both_eyes_visible else ""
+    tag = f"{ratio_tag}{eye_tag}"
+    dest_path = dest_dir / f"{stem}{suffix}{tag}{ext}"
 
     if dest_path.exists():
         counter = 1
         while True:
-            new_name = f"{stem}{suffix}{ratio_tag}_{counter:03d}{ext}"
+            new_name = f"{stem}{suffix}{tag}_{counter:03d}{ext}"
             dest_path = dest_dir / new_name
             if not dest_path.exists():
                 break
             counter += 1
         logger.debug(
             "ファイル名重複のためリネーム: %s → %s",
-            f"{stem}{suffix}{ratio_tag}{ext}",
+            f"{stem}{suffix}{tag}{ext}",
             dest_path.name,
         )
 

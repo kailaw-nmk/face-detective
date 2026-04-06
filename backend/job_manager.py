@@ -248,6 +248,7 @@ class JobManager:
                         copy_image(
                             file_path, state.source_folder, state.dest_folder,
                             face_ratio=result["max_face_ratio"],
+                            both_eyes_visible=result["both_eyes_visible"],
                         )
                         state.extracted += 1
                     else:
@@ -349,6 +350,7 @@ class JobManager:
                     img, file_path, suffix,
                     state.source_folder, state.dest_folder,
                     face_ratio=face_result["max_face_ratio"],
+                    both_eyes_visible=face_result["both_eyes_visible"],
                 )
                 state.extracted += 1
             else:

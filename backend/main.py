@@ -85,6 +85,7 @@ class StartJobRequest(BaseModel):
     source_folder: str
     threshold: float
     spread_split: bool = False
+    require_both_eyes: bool = False
 
 
 class StartJobResponse(BaseModel):
@@ -173,6 +174,7 @@ async def start_job(request: StartJobRequest) -> StartJobResponse:
         source_folder=request.source_folder,
         threshold=request.threshold,
         spread_split=request.spread_split,
+        require_both_eyes=request.require_both_eyes,
     )
     logger.info(
         "ジョブ登録: job_id=%s, src=%s, dest=%s, threshold=%.1f, spread_split=%s",
@@ -258,6 +260,7 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str) -> None:
         send_message=send_message,
         job_id=job_id,
         spread_split=pending.get("spread_split", False),
+        require_both_eyes=pending.get("require_both_eyes", False),
     )
 
     logger.info("ジョブ実行開始: job_id=%s", job_id)

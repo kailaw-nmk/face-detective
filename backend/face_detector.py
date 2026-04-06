@@ -36,6 +36,7 @@ class FaceDetectionResult(TypedDict):
     max_face_ratio: float
     face_count: int
     should_move: bool
+    both_eyes_visible: bool
 
 
 def _no_face_result(should_move: bool = False) -> FaceDetectionResult:
@@ -52,17 +53,27 @@ def _no_face_result(should_move: bool = False) -> FaceDetectionResult:
         max_face_ratio=0.0,
         face_count=0,
         should_move=should_move,
+        both_eyes_visible=False,
     )
 
 
-def _run_short_range(image_array: np.ndarray) -> list[tuple[float, float, float, float]]:
+# 両目間距離 / 顔幅 の最小比率。これ未満は横顔とみなす。
+_MIN_EYE_DISTANCE_RATIO = 0.15
+
+
+def _run_short_range(
+    image_array: np.ndarray, image_width: int, image_height: int,
+) -> list[tuple]:
     """short-range モデル（Tasks API）で顔検出を実行する。
 
     Args:
         image_array: RGB画像のnumpy配列。
+        image_width: 画像の幅（ピクセル）。
+        image_height: 画像の高さ（ピクセル）。
 
     Returns:
-        検出された顔の (x, y, width, height) ピクセル座標リスト。
+        検出された顔の (x, y, w, h, right_eye, left_eye) リスト。
+        right_eye / left_eye は (px, py) ピクセル座標または None。
     """
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_array)
     options = _FaceDetectorOptions(
@@ -72,14 +83,26 @@ def _run_short_range(image_array: np.ndarray) -> list[tuple[float, float, float,
     with _FaceDetector.create_from_options(options) as detector:
         result = detector.detect(mp_image)
 
-    return [
-        (d.bounding_box.origin_x, d.bounding_box.origin_y,
-         d.bounding_box.width, d.bounding_box.height)
-        for d in result.detections
-    ]
+    faces = []
+    for d in result.detections:
+        x = d.bounding_box.origin_x
+        y = d.bounding_box.origin_y
+        w = d.bounding_box.width
+        h = d.bounding_box.height
+        right_eye = None
+        left_eye = None
+        if d.keypoints and len(d.keypoints) >= 2:
+            kp0 = d.keypoints[0]
+            kp1 = d.keypoints[1]
+            right_eye = (kp0.x * image_width, kp0.y * image_height)
+            left_eye = (kp1.x * image_width, kp1.y * image_height)
+        faces.append((x, y, w, h, right_eye, left_eye))
+    return faces
 
 
-def _run_full_range(image_array: np.ndarray, image_width: int, image_height: int) -> list[tuple[float, float, float, float]]:
+def _run_full_range(
+    image_array: np.ndarray, image_width: int, image_height: int,
+) -> list[tuple]:
     """full-range モデル（Solutions API, model_selection=1）で顔検出を実行する。
 
     Solutions API は正規化座標（0〜1）を返すため、ピクセル座標に変換する。
@@ -90,7 +113,8 @@ def _run_full_range(image_array: np.ndarray, image_width: int, image_height: int
         image_height: 画像の高さ（ピクセル）。
 
     Returns:
-        検出された顔の (x, y, width, height) ピクセル座標リスト。
+        検出された顔の (x, y, w, h, right_eye, left_eye) リスト。
+        right_eye / left_eye は (px, py) ピクセル座標または None。
     """
     with mp.solutions.face_detection.FaceDetection(
         model_selection=1,
@@ -108,7 +132,13 @@ def _run_full_range(image_array: np.ndarray, image_width: int, image_height: int
         y = bbox.ymin * image_height
         w = bbox.width * image_width
         h = bbox.height * image_height
-        faces.append((x, y, w, h))
+        right_eye = None
+        left_eye = None
+        kps = detection.location_data.relative_keypoints
+        if kps and len(kps) >= 2:
+            right_eye = (kps[0].x * image_width, kps[0].y * image_height)
+            left_eye = (kps[1].x * image_width, kps[1].y * image_height)
+        faces.append((x, y, w, h, right_eye, left_eye))
     return faces
 
 
@@ -145,7 +175,7 @@ def detect_faces_from_array(
             logger.warning("画像面積が0です (width=%d, height=%d)", image_width, image_height)
             return _no_face_result()
 
-        faces = _run_short_range(image_array)
+        faces = _run_short_range(image_array, image_width, image_height)
 
         if not faces:
             logger.debug("short-rangeで未検出、full-rangeで再試行します")
@@ -156,15 +186,30 @@ def detect_faces_from_array(
             return _no_face_result()
 
         face_count = len(faces)
-        max_face_area = max(w * h for _, _, w, h in faces)
+
+        # 最大面積の顔を特定する
+        max_face_idx = max(
+            range(len(faces)), key=lambda i: faces[i][2] * faces[i][3]
+        )
+        max_face = faces[max_face_idx]
+        _, _, w, h, right_eye, left_eye = max_face
+
+        max_face_area = w * h
         max_face_ratio = (max_face_area / image_area) * 100.0
         should_move = max_face_ratio >= threshold
 
+        # 両目可視の判定
+        both_eyes_visible = False
+        if right_eye is not None and left_eye is not None:
+            eye_dist = abs(right_eye[0] - left_eye[0])
+            both_eyes_visible = (eye_dist / w) > _MIN_EYE_DISTANCE_RATIO if w > 0 else False
+
         logger.debug(
-            "顔検出完了 — 顔数=%d, 最大面積比=%.2f%%, 移動=%s",
+            "顔検出完了 — 顔数=%d, 最大面積比=%.2f%%, 移動=%s, 両目=%s",
             face_count,
             max_face_ratio,
             should_move,
+            both_eyes_visible,
         )
 
         return FaceDetectionResult(
@@ -172,6 +217,7 @@ def detect_faces_from_array(
             max_face_ratio=max_face_ratio,
             face_count=face_count,
             should_move=should_move,
+            both_eyes_visible=both_eyes_visible,
         )
 
     except Exception as exc:

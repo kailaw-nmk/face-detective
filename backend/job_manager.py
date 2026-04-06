@@ -29,6 +29,7 @@ class JobState:
         dest_folder: Path,
         threshold: float,
         spread_split: bool = False,
+        require_both_eyes: bool = False,
     ) -> None:
         """ジョブ状態を初期化する。
 
@@ -38,12 +39,14 @@ class JobState:
             dest_folder: 画像移動先フォルダ。
             threshold: 顔面積比の閾値 (%)。
             spread_split: 見開き分割を有効にするかどうか。
+            require_both_eyes: 両目が映っている画像のみ抽出するかどうか。
         """
         self.job_id = job_id
         self.source_folder = source_folder
         self.dest_folder = dest_folder
         self.threshold = threshold
         self.spread_split = spread_split
+        self.require_both_eyes = require_both_eyes
 
         self.status: str = "running"
         self.total: int = 0
@@ -89,6 +92,7 @@ class JobManager:
         source_folder: str,
         threshold: float,
         spread_split: bool = False,
+        require_both_eyes: bool = False,
     ) -> tuple[str, str]:
         """ジョブをペンディング状態で登録し、(job_id, dest_folder) を返す。
 
@@ -99,6 +103,7 @@ class JobManager:
             source_folder: 走査対象フォルダのパス文字列。
             threshold: 顔面積比の閾値 (%)。
             spread_split: 見開き分割を有効にするかどうか。
+            require_both_eyes: 両目が映っている画像のみ抽出するかどうか。
 
         Returns:
             登録されたジョブ ID 文字列と、自動生成された保存先フォルダパス文字列のタプル。
@@ -110,6 +115,7 @@ class JobManager:
             "dest_folder": dest_folder,
             "threshold": threshold,
             "spread_split": spread_split,
+            "require_both_eyes": require_both_eyes,
         }
         logger.info("ジョブを登録しました (pending): job_id=%s", job_id)
         return job_id, dest_folder
@@ -122,6 +128,7 @@ class JobManager:
         send_message: Any,
         job_id: str | None = None,
         spread_split: bool = False,
+        require_both_eyes: bool = False,
     ) -> str:
         """新規ジョブを作成して非同期タスクとして起動する。
 
@@ -133,6 +140,7 @@ class JobManager:
                           引数として JSON 文字列を受け取る。
             job_id: 使用するジョブ ID。None の場合は新規 UUID を生成する。
             spread_split: 見開き分割を有効にするかどうか。
+            require_both_eyes: 両目が映っている画像のみ抽出するかどうか。
 
         Returns:
             ジョブ ID 文字列。
@@ -145,6 +153,7 @@ class JobManager:
             dest_folder=Path(dest_folder),
             threshold=threshold,
             spread_split=spread_split,
+            require_both_eyes=require_both_eyes,
         )
         self._jobs[job_id] = state
         logger.info("ジョブを開始します: job_id=%s, spread_split=%s", job_id, spread_split)
@@ -232,7 +241,10 @@ class JobManager:
                 else:
                     result = detect_faces(file_path, state.threshold)
 
-                    if result["should_move"]:
+                    if result["should_move"] and (
+                        not state.require_both_eyes
+                        or result["both_eyes_visible"]
+                    ):
                         copy_image(
                             file_path, state.source_folder, state.dest_folder,
                             face_ratio=result["max_face_ratio"],
@@ -329,7 +341,10 @@ class JobManager:
                 image_array, img.width, img.height, state.threshold
             )
 
-            if face_result["should_move"]:
+            if face_result["should_move"] and (
+                not state.require_both_eyes
+                or face_result["both_eyes_visible"]
+            ):
                 save_spread_image(
                     img, file_path, suffix,
                     state.source_folder, state.dest_folder,

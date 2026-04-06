@@ -13,7 +13,7 @@ from typing import Any
 from face_detector import detect_faces, detect_faces_from_array
 from file_scanner import scan_folder
 from image_copier import copy_image, generate_dest_folder, save_spread_image
-from person_detector import count_persons
+from person_detector import count_persons_split
 from spread_splitter import process_spread
 
 logger = logging.getLogger(__name__)
@@ -30,6 +30,9 @@ class JobState:
         threshold: float,
         spread_split: bool = False,
         require_both_eyes: bool = False,
+        min_eye_ratio: float = 0.25,
+        min_face_score: float = 0.5,
+        yolo_confidence: float = 0.2,
     ) -> None:
         """ジョブ状態を初期化する。
 
@@ -40,6 +43,9 @@ class JobState:
             threshold: 顔面積比の閾値 (%)。
             spread_split: 見開き分割を有効にするかどうか。
             require_both_eyes: 両目が映っている画像のみ抽出するかどうか。
+            min_eye_ratio: 両目間距離 / 顔幅 の最小比率。
+            min_face_score: 両目判定に必要な最低検出信頼度。
+            yolo_confidence: YOLO 人物検出の信頼度閾値。
         """
         self.job_id = job_id
         self.source_folder = source_folder
@@ -47,6 +53,9 @@ class JobState:
         self.threshold = threshold
         self.spread_split = spread_split
         self.require_both_eyes = require_both_eyes
+        self.min_eye_ratio = min_eye_ratio
+        self.min_face_score = min_face_score
+        self.yolo_confidence = yolo_confidence
 
         self.status: str = "running"
         self.total: int = 0
@@ -93,17 +102,20 @@ class JobManager:
         threshold: float,
         spread_split: bool = False,
         require_both_eyes: bool = False,
+        min_eye_ratio: float = 0.25,
+        min_face_score: float = 0.5,
+        yolo_confidence: float = 0.2,
     ) -> tuple[str, str]:
         """ジョブをペンディング状態で登録し、(job_id, dest_folder) を返す。
-
-        保存先フォルダは source_folder から自動生成する（末尾に ``_face`` を付与）。
-        WebSocket 接続前にクライアントへ job_id と dest_folder を渡すための事前登録。
 
         Args:
             source_folder: 走査対象フォルダのパス文字列。
             threshold: 顔面積比の閾値 (%)。
             spread_split: 見開き分割を有効にするかどうか。
             require_both_eyes: 両目が映っている画像のみ抽出するかどうか。
+            min_eye_ratio: 両目間距離 / 顔幅 の最小比率。
+            min_face_score: 両目判定に必要な最低検出信頼度。
+            yolo_confidence: YOLO 人物検出の信頼度閾値。
 
         Returns:
             登録されたジョブ ID 文字列と、自動生成された保存先フォルダパス文字列のタプル。
@@ -116,6 +128,9 @@ class JobManager:
             "threshold": threshold,
             "spread_split": spread_split,
             "require_both_eyes": require_both_eyes,
+            "min_eye_ratio": min_eye_ratio,
+            "min_face_score": min_face_score,
+            "yolo_confidence": yolo_confidence,
         }
         logger.info("ジョブを登録しました (pending): job_id=%s", job_id)
         return job_id, dest_folder
@@ -129,6 +144,9 @@ class JobManager:
         job_id: str | None = None,
         spread_split: bool = False,
         require_both_eyes: bool = False,
+        min_eye_ratio: float = 0.25,
+        min_face_score: float = 0.5,
+        yolo_confidence: float = 0.2,
     ) -> str:
         """新規ジョブを作成して非同期タスクとして起動する。
 
@@ -137,10 +155,12 @@ class JobManager:
             dest_folder: 画像移動先フォルダのパス文字列。
             threshold: 顔面積比の閾値 (%)。
             send_message: WebSocket へメッセージを送信するコルーチン関数。
-                          引数として JSON 文字列を受け取る。
             job_id: 使用するジョブ ID。None の場合は新規 UUID を生成する。
             spread_split: 見開き分割を有効にするかどうか。
             require_both_eyes: 両目が映っている画像のみ抽出するかどうか。
+            min_eye_ratio: 両目間距離 / 顔幅 の最小比率。
+            min_face_score: 両目判定に必要な最低検出信頼度。
+            yolo_confidence: YOLO 人物検出の信頼度閾値。
 
         Returns:
             ジョブ ID 文字列。
@@ -154,6 +174,9 @@ class JobManager:
             threshold=threshold,
             spread_split=spread_split,
             require_both_eyes=require_both_eyes,
+            min_eye_ratio=min_eye_ratio,
+            min_face_score=min_face_score,
+            yolo_confidence=yolo_confidence,
         )
         self._jobs[job_id] = state
         logger.info("ジョブを開始します: job_id=%s, spread_split=%s", job_id, spread_split)
@@ -239,7 +262,11 @@ class JobManager:
                 if state.spread_split:
                     self._process_spread_file(state, file_path)
                 else:
-                    result = detect_faces(file_path, state.threshold)
+                    result = detect_faces(
+                        file_path, state.threshold,
+                        min_eye_ratio=state.min_eye_ratio,
+                        min_face_score=state.min_face_score,
+                    )
 
                     if result["should_move"] and (
                         not state.require_both_eyes
@@ -330,7 +357,10 @@ class JobManager:
         """
         import numpy as np
 
-        spread_result = process_spread(file_path, count_persons)
+        def _count_fn(arr: np.ndarray) -> int:
+            return count_persons_split(arr, confidence=state.yolo_confidence)
+
+        spread_result = process_spread(file_path, _count_fn)
 
         if spread_result["action"] == "split":
             state.split_count += 1
@@ -339,7 +369,9 @@ class JobManager:
             # 各画像（分割後 or 非分割）で顔検出して閾値判定する
             image_array = np.array(img, dtype=np.uint8)
             face_result = detect_faces_from_array(
-                image_array, img.width, img.height, state.threshold
+                image_array, img.width, img.height, state.threshold,
+                min_eye_ratio=state.min_eye_ratio,
+                min_face_score=state.min_face_score,
             )
 
             if face_result["should_move"] and (

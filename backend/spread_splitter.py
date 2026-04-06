@@ -271,6 +271,7 @@ def process_spread(
         working_image = original
 
     # numpy 配列に変換して人物検出を実行する
+    # 全体検出と左右分割検出の両方を試み、より多い方を採用する
     image_array = np.array(working_image, dtype=np.uint8)
 
     person_count = count_persons_fn(image_array)

@@ -86,6 +86,9 @@ class StartJobRequest(BaseModel):
     threshold: float
     spread_split: bool = False
     require_both_eyes: bool = False
+    min_eye_ratio: float = 0.25
+    min_face_score: float = 0.5
+    yolo_confidence: float = 0.2
 
 
 class StartJobResponse(BaseModel):
@@ -175,6 +178,9 @@ async def start_job(request: StartJobRequest) -> StartJobResponse:
         threshold=request.threshold,
         spread_split=request.spread_split,
         require_both_eyes=request.require_both_eyes,
+        min_eye_ratio=request.min_eye_ratio,
+        min_face_score=request.min_face_score,
+        yolo_confidence=request.yolo_confidence,
     )
     logger.info(
         "ジョブ登録: job_id=%s, src=%s, dest=%s, threshold=%.1f, spread_split=%s",
@@ -261,6 +267,9 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str) -> None:
         job_id=job_id,
         spread_split=pending.get("spread_split", False),
         require_both_eyes=pending.get("require_both_eyes", False),
+        min_eye_ratio=pending.get("min_eye_ratio", 0.25),
+        min_face_score=pending.get("min_face_score", 0.5),
+        yolo_confidence=pending.get("yolo_confidence", 0.2),
     )
 
     logger.info("ジョブ実行開始: job_id=%s", job_id)

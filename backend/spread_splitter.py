@@ -22,6 +22,12 @@ register_heif_opener()
 
 logger = logging.getLogger(__name__)
 
+# 黒マスク（レターボックス）検出パラメータ
+DARK_THRESHOLD = 20.0      # 黒とみなす列平均輝度の上限（0–255）
+DARK_PIXEL_RATIO = 0.95    # 列内で暗いピクセルが占める最低割合
+MAX_MASK_RATIO = 0.40      # 片側除去幅の上限（画像幅比。暴走防止）
+MIN_MASK_WIDTH = 5         # これ未満の黒帯は無視
+
 
 class SpreadResult(TypedDict):
     """見開き処理結果の型定義。"""
@@ -32,6 +38,59 @@ class SpreadResult(TypedDict):
     images: list[Image.Image]
     suffixes: list[str]   # [""] or ["_L", "_R"]
     face_detection: Any   # 全体画像に対する顔検出結果（非分割時に再利用可能）
+
+
+def detect_side_masks(image: Image.Image) -> tuple[int, int]:
+    """画像左右端の黒マスク（縦の黒帯）を検出し、残すコンテンツ領域を返す。
+
+    左右端から中央に向かって「暗い列」が連続する範囲を黒マスクとみなす。
+    列平均輝度と暗ピクセル率の両方で判定することで、反対側に明るい被写体が
+    あっても黒帯だけを正しく識別する。
+
+    Args:
+        image: 処理対象の PIL 画像（RGB を想定）。
+
+    Returns:
+        残すコンテンツ領域の x 範囲 (content_left, content_right)。
+        content_right は exclusive。黒帯がなければ (0, width)。
+    """
+    rgb = image.convert("RGB")
+    arr = np.asarray(rgb, dtype=np.float32)  # shape: (H, W, 3)
+    width = arr.shape[1]
+
+    col_mean = arr.mean(axis=(0, 2))               # 各列の平均輝度 (W,)
+    pixel_lum = arr.mean(axis=2)                    # 各ピクセル輝度 (H, W)
+    dark_ratio = (pixel_lum < DARK_THRESHOLD).mean(axis=0)  # 列ごとの暗ピクセル率 (W,)
+    is_dark = (col_mean < DARK_THRESHOLD) & (dark_ratio > DARK_PIXEL_RATIO)  # (W,)
+
+    max_mask = int(width * MAX_MASK_RATIO)
+
+    # 左端から連続する暗い列
+    left = 0
+    while left < width and bool(is_dark[left]):
+        left += 1
+    if left < MIN_MASK_WIDTH:
+        left = 0
+    else:
+        left = min(left, max_mask)
+
+    # 右端から連続する暗い列（content_right は exclusive）
+    right = width
+    while right > 0 and bool(is_dark[right - 1]):
+        right -= 1
+    if (width - right) < MIN_MASK_WIDTH:
+        right = width
+    else:
+        right = max(right, width - max_mask)
+
+    if right <= left:
+        # 全体が暗い等の異常時はトリミングしない
+        logger.debug("黒マスク検出: content 領域が無効のためトリミングなし")
+        return (0, width)
+
+    if left != 0 or right != width:
+        logger.debug("黒マスクを検出 — content x=[%d, %d)", left, right)
+    return (left, right)
 
 
 def detect_center_stripe(

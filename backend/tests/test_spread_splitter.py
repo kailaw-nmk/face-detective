@@ -17,6 +17,7 @@ from PIL import Image, ImageDraw
 from spread_splitter import (
     SpreadResult,
     detect_center_stripe,
+    detect_side_masks,
     process_spread,
     remove_stripe,
     split_at_center,
@@ -270,3 +271,70 @@ class TestProcessSpread:
         call_args = count_fn.call_args
         # 第 1 引数は numpy 配列
         assert isinstance(call_args[0][0], np.ndarray), "第 1 引数は numpy 配列のはず"
+
+
+# ---------------------------------------------------------------------------
+# detect_side_masks
+# ---------------------------------------------------------------------------
+
+
+class TestDetectSideMasks:
+    """detect_side_masks のテストクラス。"""
+
+    def test_both_side_black_bars(self) -> None:
+        """左右に黒帯、中央にグレー矩形の画像で境界が正しく返ること。"""
+        width, height = 1000, 400
+        img = Image.new("RGB", (width, height), color=(0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        # 中央 [200, 800) にグレーのコンテンツ
+        draw.rectangle([(200, 0), (799, height - 1)], fill=(128, 128, 128))
+
+        content_left, content_right = detect_side_masks(img)
+
+        assert content_left == 200, f"左境界は 200 のはず: {content_left}"
+        assert content_right == 800, f"右境界は 800 のはず: {content_right}"
+
+    def test_no_black_bars(self) -> None:
+        """黒帯のない画像では (0, width) が返ること。"""
+        width, height = 800, 400
+        img = Image.new("RGB", (width, height), color=(120, 120, 120))
+
+        assert detect_side_masks(img) == (0, width)
+
+    def test_safety_valve_all_dark(self) -> None:
+        """ほぼ真っ黒な画像では MAX_MASK_RATIO を超えてトリミングしないこと。"""
+        width, height = 1000, 400
+        img = Image.new("RGB", (width, height), color=(0, 0, 0))
+
+        content_left, content_right = detect_side_masks(img)
+
+        # 片側の除去は 40% (=400px) 上限。左は最大 400、右境界は最小 600。
+        assert content_left <= 400, f"左除去が上限超過: {content_left}"
+        assert content_right >= 600, f"右除去が上限超過: {content_right}"
+
+    def test_bright_subject_opposite_side(self) -> None:
+        """黒帯の反対側に明るい矩形があっても黒帯だけ検出されること。"""
+        width, height = 1000, 400
+        img = Image.new("RGB", (width, height), color=(128, 128, 128))
+        draw = ImageDraw.Draw(img)
+        # 左端 [0, 150) に黒帯
+        draw.rectangle([(0, 0), (149, height - 1)], fill=(0, 0, 0))
+        # 右下に白い被写体（黒帯検出に影響しないこと）
+        draw.rectangle([(850, 200), (999, height - 1)], fill=(255, 255, 255))
+
+        content_left, content_right = detect_side_masks(img)
+
+        assert content_left == 150, f"左境界は 150 のはず: {content_left}"
+        assert content_right == width, f"右境界は width のはず: {content_right}"
+
+    def test_narrow_bar_ignored(self) -> None:
+        """MIN_MASK_WIDTH 未満の細い黒帯は無視されること。"""
+        width, height = 800, 400
+        img = Image.new("RGB", (width, height), color=(120, 120, 120))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([(0, 0), (2, height - 1)], fill=(0, 0, 0))  # 幅 3px
+
+        content_left, content_right = detect_side_masks(img)
+
+        assert content_left == 0, f"細い帯は無視され 0 のはず: {content_left}"
+        assert content_right == width

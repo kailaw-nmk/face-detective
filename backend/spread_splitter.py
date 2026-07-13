@@ -1,12 +1,13 @@
 """見開き画像分割モジュール。
 
-フォトブックなどの見開き（スプレッド）画像を検出し、中央のストライプ（綴じ目）を
-除去したうえで左右の個別ページ画像に分割する。
+フォトブックなどの見開き（スプレッド）画像を処理し、左右の黒マスクを除去したうえで、
+中央のストライプ（綴じ目）を検出・除去し、条件によって左右の個別ページ画像に分割する。
 
 主な処理フロー:
-    1. 中央ストライプの検出（Strategy A: 白ストライプ / Strategy B: 輝度勾配境界）
-    2. ストライプが検出された場合は除去して結合画像を生成
-    3. 顔検出関数で顔数を確認し、2 枚以上あれば左右に分割
+    1. 左右の黒マスク（縦の黒帯）を検出してトリミング（分割の有無に関わらず常に適用）
+    2. 中央ストライプの検出（Strategy A: 白ストライプ / Strategy B: 輝度勾配境界）
+    3. ストライプが検出された場合は除去して結合画像を生成
+    4. 顔検出関数で人物数を確認し、ストライプ検出 かつ 人物数 >= 2 の両方が成立した場合のみ左右に分割
 """
 
 import logging
@@ -22,6 +23,12 @@ register_heif_opener()
 
 logger = logging.getLogger(__name__)
 
+# 黒マスク（レターボックス）検出パラメータ
+DARK_THRESHOLD = 20.0      # 黒とみなす列平均輝度の上限（0–255）
+DARK_PIXEL_RATIO = 0.95    # 列内で暗いピクセルが占める最低割合
+MAX_MASK_RATIO = 0.40      # 片側除去幅の上限（画像幅比。暴走防止）
+MIN_MASK_WIDTH = 5         # これ未満の黒帯は無視
+
 
 class SpreadResult(TypedDict):
     """見開き処理結果の型定義。"""
@@ -32,6 +39,80 @@ class SpreadResult(TypedDict):
     images: list[Image.Image]
     suffixes: list[str]   # [""] or ["_L", "_R"]
     face_detection: Any   # 全体画像に対する顔検出結果（非分割時に再利用可能）
+
+
+def detect_side_masks(image: Image.Image) -> tuple[int, int]:
+    """画像左右端の黒マスク（縦の黒帯）を検出し、残すコンテンツ領域を返す。
+
+    左右端から中央に向かって「暗い列」が連続する範囲を黒マスクとみなす。
+    列平均輝度と暗ピクセル率の両方で判定することで、反対側に明るい被写体が
+    あっても黒帯だけを正しく識別する。
+
+    Args:
+        image: 処理対象の PIL 画像（RGB を想定）。
+
+    Returns:
+        残すコンテンツ領域の x 範囲 (content_left, content_right)。
+        content_right は exclusive。黒帯がなければ (0, width)。
+    """
+    rgb = image.convert("RGB")
+    arr = np.asarray(rgb, dtype=np.float32)  # shape: (H, W, 3)
+    width = arr.shape[1]
+
+    col_mean = arr.mean(axis=(0, 2))               # 各列の平均輝度 (W,)
+    pixel_lum = arr.mean(axis=2)                    # 各ピクセル輝度 (H, W)
+    dark_ratio = (pixel_lum < DARK_THRESHOLD).mean(axis=0)  # 列ごとの暗ピクセル率 (W,)
+    is_dark = (col_mean < DARK_THRESHOLD) & (dark_ratio > DARK_PIXEL_RATIO)  # (W,)
+
+    max_mask = int(width * MAX_MASK_RATIO)
+
+    # 左端から連続する暗い列
+    left = 0
+    while left < width and bool(is_dark[left]):
+        left += 1
+    if left < MIN_MASK_WIDTH:
+        left = 0
+    else:
+        left = min(left, max_mask)
+
+    # 右端から連続する暗い列（content_right は exclusive）
+    right = width
+    while right > 0 and bool(is_dark[right - 1]):
+        right -= 1
+    if (width - right) < MIN_MASK_WIDTH:
+        right = width
+    else:
+        right = max(right, width - max_mask)
+
+    if right <= left:
+        # 全体が暗い等の異常時はトリミングしない
+        logger.debug("黒マスク検出: content 領域が無効のためトリミングなし")
+        return (0, width)
+
+    if left != 0 or right != width:
+        logger.debug("黒マスクを検出 — content x=[%d, %d)", left, right)
+    return (left, right)
+
+
+def crop_side_masks(
+    image: Image.Image,
+    content_left: int,
+    content_right: int,
+) -> Image.Image:
+    """左右の黒マスクを除去したトリミング画像を返す。
+
+    Args:
+        image: 処理対象の PIL 画像。
+        content_left: 残すコンテンツ領域の左端 x 座標。
+        content_right: 残すコンテンツ領域の右端 x 座標（exclusive）。
+
+    Returns:
+        トリミング後の PIL 画像。トリミング不要（0, width）の場合は元画像をそのまま返す。
+    """
+    width, height = image.size
+    if content_left <= 0 and content_right >= width:
+        return image
+    return image.crop((content_left, 0, content_right, height))
 
 
 def detect_center_stripe(
@@ -213,15 +294,18 @@ def process_spread(
     image_path: Path,
     count_persons_fn: Callable[[np.ndarray], int],
 ) -> SpreadResult:
-    """見開き画像を処理し、ストライプ除去・人物検出・分割を行う。
+    """見開き画像を処理し、黒マスク除去・ストライプ除去・人物検出・分割を行う。
 
     処理フロー:
         1. EXIF 情報を考慮して画像を開き、RGB に変換する
-        2. ``detect_center_stripe()`` で中央ストライプを検出する
-        3. ストライプが検出された場合は ``remove_stripe()`` で除去する
-        4. ``count_persons_fn`` で人物数を取得する
-        5. 人物数 >= 2 の場合は ``split_at_center()`` で左右に分割して返す
-        6. 人物数 < 2 の場合は working_image をそのまま返す
+        2. ``detect_side_masks()`` で左右の黒マスク（縦の黒帯）を検出し、
+           ``crop_side_masks()`` でトリミングする（分割の有無に関わらず常に適用）
+        3. ``detect_center_stripe()`` で中央ストライプを検出する
+        4. ストライプが検出された場合は ``remove_stripe()`` で除去する
+        5. ``count_persons_fn`` で人物数を取得する
+        6. ストライプ検出 かつ 人物数 >= 2 の両方が成立した場合のみ
+           ``split_at_center()`` で左右に分割して返す
+        7. それ以外の場合はトリミング済み画像 1 枚をそのまま返す
 
     Args:
         image_path: 処理対象の画像ファイルパス。
@@ -231,7 +315,7 @@ def process_spread(
     Returns:
         :class:`SpreadResult` 辞書:
             - action (str): "split" | "kept" | "no_stripe"
-            - person_count (int): 検出された人物の数
+            - face_count (int): 検出された人物の数
             - stripe_detected (bool): ストライプが検出されたか
             - images (list[Image.Image]): 結果画像リスト（呼び出し元が管理）
             - suffixes (list[str]): [""] または ["_L", "_R"]
@@ -243,10 +327,26 @@ def process_spread(
 
     logger.debug("画像を読み込みました: %s (%dx%d)", image_path, *original.size)
 
-    # ストライプ検出
+    # 左右の黒マスクを検出してトリミングする（分割の有無に関わらず常に適用）
+    try:
+        content_left, content_right = detect_side_masks(original)
+    except Exception as exc:
+        logger.error(
+            "黒マスク検出中にエラーが発生しました。トリミングをスキップします — %s: %s",
+            image_path, exc, exc_info=True,
+        )
+        content_left, content_right = 0, original.size[0]
+    base_image = crop_side_masks(original, content_left, content_right)
+    if base_image is not original:
+        logger.info(
+            "黒マスクをトリミングしました: %s — %dx%d → %dx%d",
+            image_path, *original.size, *base_image.size,
+        )
+
+    # ストライプ検出（トリミング後の画像に対して実行）
     stripe_info: tuple[int, int] | None = None
     try:
-        stripe_info = detect_center_stripe(original)
+        stripe_info = detect_center_stripe(base_image)
     except Exception as exc:
         logger.error(
             "ストライプ検出中にエラーが発生しました。スキップします — %s: %s",
@@ -265,10 +365,10 @@ def process_spread(
             stripe_info[0],
             stripe_info[1],
         )
-        working_image = remove_stripe(original, stripe_info[0], stripe_info[1])
+        working_image = remove_stripe(base_image, stripe_info[0], stripe_info[1])
     else:
         logger.debug("ストライプは検出されませんでした: %s", image_path)
-        working_image = original
+        working_image = base_image
 
     # numpy 配列に変換して人物検出を実行する
     # 全体検出と左右分割検出の両方を試み、より多い方を採用する
@@ -280,8 +380,9 @@ def process_spread(
         "人物検出結果: %s — 人物数=%d", image_path, person_count
     )
 
-    # 人物数に応じて分割判定を行う
-    if person_count >= 2:
+    # 分割判定: 綴じ目ストライプ検出 AND 人物数 >= 2 の両方成立時のみ分割する
+    should_split = stripe_detected and person_count >= 2
+    if should_split:
         left_img, right_img = split_at_center(working_image)
         logger.info("見開きを左右に分割します: %s", image_path)
         return SpreadResult(

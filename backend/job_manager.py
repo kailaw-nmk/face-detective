@@ -13,7 +13,7 @@ from typing import Any
 from face_detector import detect_faces, detect_faces_from_array
 from file_scanner import scan_folder
 from image_copier import copy_image, generate_dest_folder, save_spread_image
-from person_detector import count_persons_split
+from person_detector import count_persons
 from spread_splitter import process_spread
 
 logger = logging.getLogger(__name__)
@@ -358,7 +358,9 @@ class JobManager:
         import numpy as np
 
         def _count_fn(arr: np.ndarray) -> int:
-            return count_persons_split(arr, confidence=state.yolo_confidence)
+            # 全体画像の人物ボックス総数で判定する
+            # （左右分割カウントは中央またぎの 1 人を 2 人と誤カウントするため使わない）
+            return count_persons(arr, confidence=state.yolo_confidence)
 
         spread_result = process_spread(file_path, _count_fn)
 

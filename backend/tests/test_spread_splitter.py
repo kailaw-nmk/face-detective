@@ -16,7 +16,9 @@ from PIL import Image, ImageDraw
 
 from spread_splitter import (
     SpreadResult,
+    crop_side_masks,
     detect_center_stripe,
+    detect_side_masks,
     process_spread,
     remove_stripe,
     split_at_center,
@@ -270,3 +272,172 @@ class TestProcessSpread:
         call_args = count_fn.call_args
         # 第 1 引数は numpy 配列
         assert isinstance(call_args[0][0], np.ndarray), "第 1 引数は numpy 配列のはず"
+
+    def _make_masked_spread_file(
+        self,
+        tmp_path: Path,
+        *,
+        with_stripe: bool,
+        filename: str = "masked.jpg",
+    ) -> Path:
+        """左右に黒帯を持つテスト用見開き画像を作成して返す。
+
+        1000x400。左右各 100px を黒帯、中央 [100, 900) にコンテンツ。
+        with_stripe=True の場合はコンテンツ中央 (x=490-509) に白ストライプを描画する。
+        """
+        width, height = 1000, 400
+        img = Image.new("RGB", (width, height), color=(0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([(100, 0), (899, height - 1)], fill=(0, 0, 200))
+        if with_stripe:
+            draw.rectangle([(490, 0), (509, height - 1)], fill=(255, 255, 255))
+        path = tmp_path / filename
+        img.save(path)
+        return path
+
+    def test_no_split_when_stripe_but_one_person(self, tmp_path: Path) -> None:
+        """綴じ目ありでも人数 1 なら分割しないこと（AND 条件）。"""
+        image_path = self._make_spread_image_file(tmp_path, with_stripe=True)
+        count_fn = _make_count_persons_fn(person_count=1)
+
+        result = process_spread(image_path, count_fn)
+
+        assert result["action"] == "kept", f"action が 'kept' のはず: {result['action']}"
+        assert result["suffixes"] == [""]
+
+    def test_no_split_when_two_persons_but_no_stripe(self, tmp_path: Path) -> None:
+        """人数 2 でも綴じ目がなければ分割しないこと（問題2の修正）。"""
+        image_path = self._make_spread_image_file(tmp_path, with_stripe=False)
+        count_fn = _make_count_persons_fn(person_count=2)
+
+        result = process_spread(image_path, count_fn)
+
+        assert result["action"] == "no_stripe", f"action が 'no_stripe' のはず: {result['action']}"
+        assert len(result["images"]) == 1, "分割されないので画像は 1 枚"
+        assert result["suffixes"] == [""]
+
+    def test_masked_spread_split_removes_black_bars(self, tmp_path: Path) -> None:
+        """黒帯+綴じ目+2人 → 分割され、左右画像に黒帯が残らないこと（問題1の修正）。"""
+        image_path = self._make_masked_spread_file(tmp_path, with_stripe=True)
+        count_fn = _make_count_persons_fn(person_count=2)
+
+        result = process_spread(image_path, count_fn)
+
+        assert result["action"] == "split", f"action が 'split' のはず: {result['action']}"
+        assert len(result["images"]) == 2
+        # 左画像の左端列・右画像の右端列が黒でない（黒帯が除去されている）ことを確認
+        left_img, right_img = result["images"]
+        left_edge = np.asarray(left_img)[:, 0, :].mean()
+        right_edge = np.asarray(right_img)[:, -1, :].mean()
+        assert left_edge > 30, f"左画像の左端に黒帯が残っている: {left_edge}"
+        assert right_edge > 30, f"右画像の右端に黒帯が残っている: {right_edge}"
+
+    def test_masked_single_page_trimmed_not_split(self, tmp_path: Path) -> None:
+        """黒帯+中央1人（綴じ目なし）→ 分割されずトリミングのみ（問題2の修正）。"""
+        image_path = self._make_masked_spread_file(tmp_path, with_stripe=False)
+        count_fn = _make_count_persons_fn(person_count=1)
+
+        result = process_spread(image_path, count_fn)
+
+        assert result["action"] == "no_stripe", f"action が 'no_stripe' のはず: {result['action']}"
+        assert len(result["images"]) == 1
+        # トリミングで幅が元の 1000 より小さくなっている（黒帯 200px 除去 → 約 800）
+        assert result["images"][0].width < 1000, "黒帯がトリミングされていない"
+        # 左右端が黒でない
+        arr = np.asarray(result["images"][0])
+        assert arr[:, 0, :].mean() > 30, "左端に黒帯が残っている"
+        assert arr[:, -1, :].mean() > 30, "右端に黒帯が残っている"
+
+
+# ---------------------------------------------------------------------------
+# detect_side_masks
+# ---------------------------------------------------------------------------
+
+
+class TestDetectSideMasks:
+    """detect_side_masks のテストクラス。"""
+
+    def test_both_side_black_bars(self) -> None:
+        """左右に黒帯、中央にグレー矩形の画像で境界が正しく返ること。"""
+        width, height = 1000, 400
+        img = Image.new("RGB", (width, height), color=(0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        # 中央 [200, 800) にグレーのコンテンツ
+        draw.rectangle([(200, 0), (799, height - 1)], fill=(128, 128, 128))
+
+        content_left, content_right = detect_side_masks(img)
+
+        assert content_left == 200, f"左境界は 200 のはず: {content_left}"
+        assert content_right == 800, f"右境界は 800 のはず: {content_right}"
+
+    def test_no_black_bars(self) -> None:
+        """黒帯のない画像では (0, width) が返ること。"""
+        width, height = 800, 400
+        img = Image.new("RGB", (width, height), color=(120, 120, 120))
+
+        assert detect_side_masks(img) == (0, width)
+
+    def test_safety_valve_all_dark(self) -> None:
+        """ほぼ真っ黒な画像では MAX_MASK_RATIO を超えてトリミングしないこと。"""
+        width, height = 1000, 400
+        img = Image.new("RGB", (width, height), color=(0, 0, 0))
+
+        content_left, content_right = detect_side_masks(img)
+
+        # 片側の除去は 40% (=400px) 上限。左は最大 400、右境界は最小 600。
+        assert content_left <= 400, f"左除去が上限超過: {content_left}"
+        assert content_right >= 600, f"右除去が上限超過: {content_right}"
+
+    def test_bright_subject_opposite_side(self) -> None:
+        """黒帯の反対側に明るい矩形があっても黒帯だけ検出されること。"""
+        width, height = 1000, 400
+        img = Image.new("RGB", (width, height), color=(128, 128, 128))
+        draw = ImageDraw.Draw(img)
+        # 左端 [0, 150) に黒帯
+        draw.rectangle([(0, 0), (149, height - 1)], fill=(0, 0, 0))
+        # 右下に白い被写体（黒帯検出に影響しないこと）
+        draw.rectangle([(850, 200), (999, height - 1)], fill=(255, 255, 255))
+
+        content_left, content_right = detect_side_masks(img)
+
+        assert content_left == 150, f"左境界は 150 のはず: {content_left}"
+        assert content_right == width, f"右境界は width のはず: {content_right}"
+
+    def test_narrow_bar_ignored(self) -> None:
+        """MIN_MASK_WIDTH 未満の細い黒帯は無視されること。"""
+        width, height = 800, 400
+        img = Image.new("RGB", (width, height), color=(120, 120, 120))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([(0, 0), (2, height - 1)], fill=(0, 0, 0))  # 幅 3px
+
+        content_left, content_right = detect_side_masks(img)
+
+        assert content_left == 0, f"細い帯は無視され 0 のはず: {content_left}"
+        assert content_right == width
+
+
+# ---------------------------------------------------------------------------
+# crop_side_masks
+# ---------------------------------------------------------------------------
+
+
+class TestCropSideMasks:
+    """crop_side_masks のテストクラス。"""
+
+    def test_crops_to_content_region(self) -> None:
+        """指定した content 範囲でトリミングされること。"""
+        width, height = 1000, 400
+        img = Image.new("RGB", (width, height), color=(50, 60, 70))
+
+        cropped = crop_side_masks(img, 200, 800)
+
+        assert cropped.size == (600, height), f"サイズが (600, {height}) のはず: {cropped.size}"
+
+    def test_returns_original_when_full_range(self) -> None:
+        """(0, width) のときは元画像オブジェクトをそのまま返すこと。"""
+        width, height = 800, 400
+        img = Image.new("RGB", (width, height), color=(50, 60, 70))
+
+        result = crop_side_masks(img, 0, width)
+
+        assert result is img, "トリミング不要時は同一オブジェクトを返すはず"

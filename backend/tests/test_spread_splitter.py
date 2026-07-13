@@ -16,6 +16,7 @@ from PIL import Image, ImageDraw
 
 from spread_splitter import (
     SpreadResult,
+    crop_side_masks,
     detect_center_stripe,
     detect_side_masks,
     process_spread,
@@ -338,3 +339,30 @@ class TestDetectSideMasks:
 
         assert content_left == 0, f"細い帯は無視され 0 のはず: {content_left}"
         assert content_right == width
+
+
+# ---------------------------------------------------------------------------
+# crop_side_masks
+# ---------------------------------------------------------------------------
+
+
+class TestCropSideMasks:
+    """crop_side_masks のテストクラス。"""
+
+    def test_crops_to_content_region(self) -> None:
+        """指定した content 範囲でトリミングされること。"""
+        width, height = 1000, 400
+        img = Image.new("RGB", (width, height), color=(50, 60, 70))
+
+        cropped = crop_side_masks(img, 200, 800)
+
+        assert cropped.size == (600, height), f"サイズが (600, {height}) のはず: {cropped.size}"
+
+    def test_returns_original_when_full_range(self) -> None:
+        """(0, width) のときは元画像オブジェクトをそのまま返すこと。"""
+        width, height = 800, 400
+        img = Image.new("RGB", (width, height), color=(50, 60, 70))
+
+        result = crop_side_masks(img, 0, width)
+
+        assert result is img, "トリミング不要時は同一オブジェクトを返すはず"

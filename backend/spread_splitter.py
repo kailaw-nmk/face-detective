@@ -93,6 +93,27 @@ def detect_side_masks(image: Image.Image) -> tuple[int, int]:
     return (left, right)
 
 
+def crop_side_masks(
+    image: Image.Image,
+    content_left: int,
+    content_right: int,
+) -> Image.Image:
+    """左右の黒マスクを除去したトリミング画像を返す。
+
+    Args:
+        image: 処理対象の PIL 画像。
+        content_left: 残すコンテンツ領域の左端 x 座標。
+        content_right: 残すコンテンツ領域の右端 x 座標（exclusive）。
+
+    Returns:
+        トリミング後の PIL 画像。トリミング不要（0, width）の場合は元画像をそのまま返す。
+    """
+    width, height = image.size
+    if content_left <= 0 and content_right >= width:
+        return image
+    return image.crop((content_left, 0, content_right, height))
+
+
 def detect_center_stripe(
     image: Image.Image,
     search_width: int = 50,

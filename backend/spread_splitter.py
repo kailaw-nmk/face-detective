@@ -323,10 +323,26 @@ def process_spread(
 
     logger.debug("画像を読み込みました: %s (%dx%d)", image_path, *original.size)
 
-    # ストライプ検出
+    # 左右の黒マスクを検出してトリミングする（分割の有無に関わらず常に適用）
+    try:
+        content_left, content_right = detect_side_masks(original)
+    except Exception as exc:
+        logger.error(
+            "黒マスク検出中にエラーが発生しました。トリミングをスキップします — %s: %s",
+            image_path, exc, exc_info=True,
+        )
+        content_left, content_right = 0, original.size[0]
+    base_image = crop_side_masks(original, content_left, content_right)
+    if base_image is not original:
+        logger.info(
+            "黒マスクをトリミングしました: %s — %dx%d → %dx%d",
+            image_path, *original.size, *base_image.size,
+        )
+
+    # ストライプ検出（トリミング後の画像に対して実行）
     stripe_info: tuple[int, int] | None = None
     try:
-        stripe_info = detect_center_stripe(original)
+        stripe_info = detect_center_stripe(base_image)
     except Exception as exc:
         logger.error(
             "ストライプ検出中にエラーが発生しました。スキップします — %s: %s",
@@ -345,10 +361,10 @@ def process_spread(
             stripe_info[0],
             stripe_info[1],
         )
-        working_image = remove_stripe(original, stripe_info[0], stripe_info[1])
+        working_image = remove_stripe(base_image, stripe_info[0], stripe_info[1])
     else:
         logger.debug("ストライプは検出されませんでした: %s", image_path)
-        working_image = original
+        working_image = base_image
 
     # numpy 配列に変換して人物検出を実行する
     # 全体検出と左右分割検出の両方を試み、より多い方を採用する
@@ -360,8 +376,9 @@ def process_spread(
         "人物検出結果: %s — 人物数=%d", image_path, person_count
     )
 
-    # 人物数に応じて分割判定を行う
-    if person_count >= 2:
+    # 分割判定: 綴じ目ストライプ検出 AND 人物数 >= 2 の両方成立時のみ分割する
+    should_split = stripe_detected and person_count >= 2
+    if should_split:
         left_img, right_img = split_at_center(working_image)
         logger.info("見開きを左右に分割します: %s", image_path)
         return SpreadResult(

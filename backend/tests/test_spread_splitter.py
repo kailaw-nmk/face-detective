@@ -273,6 +273,81 @@ class TestProcessSpread:
         # 第 1 引数は numpy 配列
         assert isinstance(call_args[0][0], np.ndarray), "第 1 引数は numpy 配列のはず"
 
+    def _make_masked_spread_file(
+        self,
+        tmp_path: Path,
+        *,
+        with_stripe: bool,
+        filename: str = "masked.jpg",
+    ) -> Path:
+        """左右に黒帯を持つテスト用見開き画像を作成して返す。
+
+        1000x400。左右各 100px を黒帯、中央 [100, 900) にコンテンツ。
+        with_stripe=True の場合はコンテンツ中央 (x=490-509) に白ストライプを描画する。
+        """
+        width, height = 1000, 400
+        img = Image.new("RGB", (width, height), color=(0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([(100, 0), (899, height - 1)], fill=(0, 0, 200))
+        if with_stripe:
+            draw.rectangle([(490, 0), (509, height - 1)], fill=(255, 255, 255))
+        path = tmp_path / filename
+        img.save(path)
+        return path
+
+    def test_no_split_when_stripe_but_one_person(self, tmp_path: Path) -> None:
+        """綴じ目ありでも人数 1 なら分割しないこと（AND 条件）。"""
+        image_path = self._make_spread_image_file(tmp_path, with_stripe=True)
+        count_fn = _make_count_persons_fn(person_count=1)
+
+        result = process_spread(image_path, count_fn)
+
+        assert result["action"] == "kept", f"action が 'kept' のはず: {result['action']}"
+        assert result["suffixes"] == [""]
+
+    def test_no_split_when_two_persons_but_no_stripe(self, tmp_path: Path) -> None:
+        """人数 2 でも綴じ目がなければ分割しないこと（問題2の修正）。"""
+        image_path = self._make_spread_image_file(tmp_path, with_stripe=False)
+        count_fn = _make_count_persons_fn(person_count=2)
+
+        result = process_spread(image_path, count_fn)
+
+        assert result["action"] == "no_stripe", f"action が 'no_stripe' のはず: {result['action']}"
+        assert len(result["images"]) == 1, "分割されないので画像は 1 枚"
+        assert result["suffixes"] == [""]
+
+    def test_masked_spread_split_removes_black_bars(self, tmp_path: Path) -> None:
+        """黒帯+綴じ目+2人 → 分割され、左右画像に黒帯が残らないこと（問題1の修正）。"""
+        image_path = self._make_masked_spread_file(tmp_path, with_stripe=True)
+        count_fn = _make_count_persons_fn(person_count=2)
+
+        result = process_spread(image_path, count_fn)
+
+        assert result["action"] == "split", f"action が 'split' のはず: {result['action']}"
+        assert len(result["images"]) == 2
+        # 左画像の左端列・右画像の右端列が黒でない（黒帯が除去されている）ことを確認
+        left_img, right_img = result["images"]
+        left_edge = np.asarray(left_img)[:, 0, :].mean()
+        right_edge = np.asarray(right_img)[:, -1, :].mean()
+        assert left_edge > 30, f"左画像の左端に黒帯が残っている: {left_edge}"
+        assert right_edge > 30, f"右画像の右端に黒帯が残っている: {right_edge}"
+
+    def test_masked_single_page_trimmed_not_split(self, tmp_path: Path) -> None:
+        """黒帯+中央1人（綴じ目なし）→ 分割されずトリミングのみ（問題2の修正）。"""
+        image_path = self._make_masked_spread_file(tmp_path, with_stripe=False)
+        count_fn = _make_count_persons_fn(person_count=1)
+
+        result = process_spread(image_path, count_fn)
+
+        assert result["action"] == "no_stripe", f"action が 'no_stripe' のはず: {result['action']}"
+        assert len(result["images"]) == 1
+        # トリミングで幅が元の 1000 より小さくなっている（黒帯 200px 除去 → 約 800）
+        assert result["images"][0].width < 1000, "黒帯がトリミングされていない"
+        # 左右端が黒でない
+        arr = np.asarray(result["images"][0])
+        assert arr[:, 0, :].mean() > 30, "左端に黒帯が残っている"
+        assert arr[:, -1, :].mean() > 30, "右端に黒帯が残っている"
+
 
 # ---------------------------------------------------------------------------
 # detect_side_masks

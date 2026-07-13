@@ -6,8 +6,9 @@
 主な処理フロー:
     1. 左右の黒マスク（縦の黒帯）を検出してトリミング（分割の有無に関わらず常に適用）
     2. 中央ストライプの検出（Strategy A: 白ストライプ / Strategy B: 輝度勾配境界）
-    3. ストライプが検出された場合は除去して結合画像を生成
-    4. 顔検出関数で人物数を確認し、ストライプ検出 かつ 人物数 >= 2 の両方が成立した場合のみ左右に分割
+    3. ストライプが検出された場合は除去して結合画像を生成（ガター除去）
+    4. 人物数を確認し、黒マスク除去後が横長（見開き）かつ 人物数 >= 2 の両方が成立した
+       場合のみ左右に分割する。単ページは縦長になるため分割されず、中央被写体の見切れを防ぐ
 """
 
 import logging
@@ -29,11 +30,17 @@ DARK_PIXEL_RATIO = 0.95    # 列内で暗いピクセルが占める最低割合
 MAX_MASK_RATIO = 0.40      # 片側除去幅の上限（画像幅比。暴走防止）
 MIN_MASK_WIDTH = 5         # これ未満の黒帯は無視
 
+# 見開き判定パラメータ
+# 黒マスク除去後のアスペクト比（width / height）がこの値以上なら「横長 = 見開き」とみなす。
+# 単ページは縦長（比 < 1.0）、見開きは横長（比 > 1.0）に分かれるため、綴じ目ストライプ検出
+# （検出率が低く見開きでも綴じ目が無いことが多い）よりも遥かに信頼できる分割の判定信号となる。
+MIN_SPREAD_ASPECT = 1.0
+
 
 class SpreadResult(TypedDict):
     """見開き処理結果の型定義。"""
 
-    action: str           # "split" | "kept" | "no_stripe"
+    action: str           # "split" | "kept"
     face_count: int
     stripe_detected: bool
     images: list[Image.Image]
@@ -303,9 +310,9 @@ def process_spread(
         3. ``detect_center_stripe()`` で中央ストライプを検出する
         4. ストライプが検出された場合は ``remove_stripe()`` で除去する
         5. ``count_persons_fn`` で人物数を取得する
-        6. ストライプ検出 かつ 人物数 >= 2 の両方が成立した場合のみ
-           ``split_at_center()`` で左右に分割して返す
-        7. それ以外の場合はトリミング済み画像 1 枚をそのまま返す
+        6. 黒マスク除去後が横長（アスペクト比 >= ``MIN_SPREAD_ASPECT``）かつ
+           人物数 >= 2 の両方が成立した場合のみ ``split_at_center()`` で左右に分割して返す
+        7. それ以外の場合はトリミング済み画像 1 枚をそのまま返す（単ページは縦長になり分割されない）
 
     Args:
         image_path: 処理対象の画像ファイルパス。
@@ -314,7 +321,7 @@ def process_spread(
 
     Returns:
         :class:`SpreadResult` 辞書:
-            - action (str): "split" | "kept" | "no_stripe"
+            - action (str): "split" | "kept"
             - face_count (int): 検出された人物の数
             - stripe_detected (bool): ストライプが検出されたか
             - images (list[Image.Image]): 結果画像リスト（呼び出し元が管理）
@@ -380,11 +387,18 @@ def process_spread(
         "人物検出結果: %s — 人物数=%d", image_path, person_count
     )
 
-    # 分割判定: 綴じ目ストライプ検出 AND 人物数 >= 2 の両方成立時のみ分割する
-    should_split = stripe_detected and person_count >= 2
+    # 分割判定: 黒マスク除去後が横長（見開き）AND 人物数 >= 2 の両方成立時のみ分割する。
+    # 綴じ目ストライプは検出率が低く分割判定には使わない（検出できた場合のガター除去には
+    # 引き続き利用している）。単ページは縦長になるため中央被写体の見切れも防げる。
+    aspect_ratio = working_image.width / working_image.height
+    is_spread = aspect_ratio >= MIN_SPREAD_ASPECT
+    should_split = is_spread and person_count >= 2
     if should_split:
         left_img, right_img = split_at_center(working_image)
-        logger.info("見開きを左右に分割します: %s", image_path)
+        logger.info(
+            "見開きを左右に分割します: %s — アスペクト比=%.2f, 人物数=%d",
+            image_path, aspect_ratio, person_count,
+        )
         return SpreadResult(
             action="split",
             face_count=person_count,
@@ -394,12 +408,12 @@ def process_spread(
             face_detection=None,
         )
     else:
-        action = "kept" if stripe_detected else "no_stripe"
         logger.info(
-            "分割なし（%s）: %s — 人物数=%d", action, image_path, person_count
+            "分割なし（kept）: %s — アスペクト比=%.2f, 人物数=%d, ストライプ=%s",
+            image_path, aspect_ratio, person_count, stripe_detected,
         )
         return SpreadResult(
-            action=action,
+            action="kept",
             face_count=person_count,
             stripe_detected=stripe_detected,
             images=[working_image],

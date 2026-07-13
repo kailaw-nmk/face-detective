@@ -245,15 +245,15 @@ class TestProcessSpread:
         assert len(result["images"]) == 1, f"画像が 1 枚のはず: {len(result['images'])}"
         assert result["suffixes"] == [""], f"suffixes が [''] のはず: {result['suffixes']}"
 
-    def test_process_spread_no_stripe(self, tmp_path: Path) -> None:
-        """ストライプなし画像では action="no_stripe" が返ること。"""
+    def test_process_spread_landscape_one_person_kept(self, tmp_path: Path) -> None:
+        """横長でも人数 1 なら分割されず action="kept" が返ること。"""
         image_path = self._make_spread_image_file(tmp_path, with_stripe=False)
         count_fn = _make_count_persons_fn(person_count=1)
 
         result: SpreadResult = process_spread(image_path, count_fn)
 
-        assert result["action"] == "no_stripe", (
-            f"action が 'no_stripe' のはず: {result['action']}"
+        assert result["action"] == "kept", (
+            f"action が 'kept' のはず: {result['action']}"
         )
         assert result["stripe_detected"] is False, "ストライプは検出されないべき"
         assert len(result["images"]) == 1, f"画像が 1 枚のはず: {len(result['images'])}"
@@ -305,16 +305,60 @@ class TestProcessSpread:
         assert result["action"] == "kept", f"action が 'kept' のはず: {result['action']}"
         assert result["suffixes"] == [""]
 
-    def test_no_split_when_two_persons_but_no_stripe(self, tmp_path: Path) -> None:
-        """人数 2 でも綴じ目がなければ分割しないこと（問題2の修正）。"""
+    def test_split_landscape_two_persons_no_stripe(self, tmp_path: Path) -> None:
+        """横長 + 2人なら綴じ目がなくても分割すること（分割漏れの修正）。"""
         image_path = self._make_spread_image_file(tmp_path, with_stripe=False)
         count_fn = _make_count_persons_fn(person_count=2)
 
         result = process_spread(image_path, count_fn)
 
-        assert result["action"] == "no_stripe", f"action が 'no_stripe' のはず: {result['action']}"
-        assert len(result["images"]) == 1, "分割されないので画像は 1 枚"
+        assert result["action"] == "split", f"action が 'split' のはず: {result['action']}"
+        assert len(result["images"]) == 2, "分割されるので画像は 2 枚"
+        assert result["suffixes"] == ["_L", "_R"]
+
+    def _make_portrait_image_file(
+        self,
+        tmp_path: Path,
+        *,
+        filename: str = "portrait.jpg",
+    ) -> Path:
+        """縦長（単ページ相当）のテスト用画像を作成して返す。
+
+        400x800（アスペクト比 0.5 の縦長）。黒マスクなし。
+        """
+        img = Image.new("RGB", (400, 800), color=(0, 0, 200))
+        path = tmp_path / filename
+        img.save(path)
+        return path
+
+    def test_no_split_portrait_even_with_two_persons(self, tmp_path: Path) -> None:
+        """縦長画像は人数 2 でも分割しないこと（中央被写体の見切れ防止）。"""
+        image_path = self._make_portrait_image_file(tmp_path)
+        count_fn = _make_count_persons_fn(person_count=2)
+
+        result = process_spread(image_path, count_fn)
+
+        assert result["action"] == "kept", f"action が 'kept' のはず: {result['action']}"
+        assert len(result["images"]) == 1, "縦長は分割されないので画像は 1 枚"
         assert result["suffixes"] == [""]
+
+    def test_masked_becomes_portrait_not_split(self, tmp_path: Path) -> None:
+        """黒帯除去後に縦長になる画像は人数 2 でも分割しないこと（問題2の実ケース相当）。"""
+        # 2000x800。左右に大きな黒帯、中央 [700, 1300) の 600px のみコンテンツ。
+        # 黒帯除去後は 600x800（縦長）になる。
+        img = Image.new("RGB", (2000, 800), color=(0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([(700, 0), (1299, 799)], fill=(0, 0, 200))
+        image_path = tmp_path / "masked_portrait.jpg"
+        img.save(image_path)
+        count_fn = _make_count_persons_fn(person_count=2)
+
+        result = process_spread(image_path, count_fn)
+
+        assert result["action"] == "kept", f"action が 'kept' のはず: {result['action']}"
+        assert len(result["images"]) == 1
+        # 黒帯除去で縦長（幅 < 高さ）になっていること
+        assert result["images"][0].width < result["images"][0].height, "縦長にトリミングされているはず"
 
     def test_masked_spread_split_removes_black_bars(self, tmp_path: Path) -> None:
         """黒帯+綴じ目+2人 → 分割され、左右画像に黒帯が残らないこと（問題1の修正）。"""
@@ -333,13 +377,13 @@ class TestProcessSpread:
         assert right_edge > 30, f"右画像の右端に黒帯が残っている: {right_edge}"
 
     def test_masked_single_page_trimmed_not_split(self, tmp_path: Path) -> None:
-        """黒帯+中央1人（綴じ目なし）→ 分割されずトリミングのみ（問題2の修正）。"""
+        """黒帯+1人（横長）→ 人数不足で分割されずトリミングのみ。"""
         image_path = self._make_masked_spread_file(tmp_path, with_stripe=False)
         count_fn = _make_count_persons_fn(person_count=1)
 
         result = process_spread(image_path, count_fn)
 
-        assert result["action"] == "no_stripe", f"action が 'no_stripe' のはず: {result['action']}"
+        assert result["action"] == "kept", f"action が 'kept' のはず: {result['action']}"
         assert len(result["images"]) == 1
         # トリミングで幅が元の 1000 より小さくなっている（黒帯 200px 除去 → 約 800）
         assert result["images"][0].width < 1000, "黒帯がトリミングされていない"

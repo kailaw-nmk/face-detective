@@ -10,6 +10,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from file_scanner import scan_folder
@@ -311,3 +312,28 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str) -> None:
 # "/" のマウントを先に置くと API/WS がすべて静的配信に飲み込まれる)。
 app.include_router(router)
 app.include_router(router, prefix=_PREFIX)
+
+
+# ---------------------------------------------------------------------------
+# ビルド済みフロントエンドの配信
+# ---------------------------------------------------------------------------
+# 必ず include_router の後に登録する (Starlette は登録順に照合するため)。
+# また "/" のマウントは全パスを飲み込むので、"/face-detect" を先に登録する。
+_DIST_DIR = Path(__file__).parent.parent / "frontend" / "dist"
+
+if _DIST_DIR.is_dir():
+    app.mount(
+        _PREFIX,
+        StaticFiles(directory=_DIST_DIR, html=True),
+        name="frontend-prefixed",
+    )
+    app.mount(
+        "/",
+        StaticFiles(directory=_DIST_DIR, html=True),
+        name="frontend",
+    )
+    logger.info("ビルド済みフロントエンドを配信します: %s", _DIST_DIR)
+else:
+    logger.warning(
+        "frontend/dist が見つかりません (UI は 404 になります): %s", _DIST_DIR
+    )

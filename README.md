@@ -130,3 +130,22 @@ Claude Codeが自動的にタスク内容に応じて適切なエージェント
 
 - `Context7` の API キーは提供ファイル内のものをそのまま使用しています。必要に応じて差し替えてください。
 - `.claude/settings.json` のパーミッション設定は開発効率を優先しています。本番環境向けにはより制限的にしてください。
+
+## OtaGenX ポータル配下での配信
+
+OtaGenX の Tailscale Serve (`https://i3-2060.tail673a53.ts.net:8443/face-detect/`) から
+アクセスする場合は、プレフィックス付きでフロントをビルドする。
+
+```powershell
+cd frontend
+$env:VITE_BASE_PATH="/face-detect/"
+npm run build
+```
+
+ビルド後は backend (`:52840`) が `frontend/dist` を配信するため、
+`http://localhost:52840/` と `https://i3-2060.tail673a53.ts.net:8443/face-detect/` の
+両方から同じ画面が開く。**フロントを変更したら再ビルドが必要**（忘れると古い画面が出続ける）。
+
+開発時の `npm run dev` (`:52841`) は `VITE_BASE_PATH` 未設定のため従来どおり動作する。
+
+`frontend/dist` は `.gitignore` によりコミット対象外のため、デプロイ先で再ビルドが必要。

@@ -4,6 +4,7 @@ import { useWebSocket } from './hooks/useWebSocket'
 import SettingsForm from './components/SettingsForm'
 import ProgressPanel from './components/ProgressPanel'
 import ResultSummary from './components/ResultSummary'
+import { apiPath } from './lib/basePath'
 
 /**
  * アプリケーションのルートコンポーネント。
@@ -60,7 +61,7 @@ function App() {
     setResult(null)
 
     try {
-      const response = await fetch('/api/start', {
+      const response = await fetch(apiPath('/api/start'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -96,7 +97,7 @@ function App() {
     if (!jobId) return
 
     try {
-      const response = await fetch('/api/stop', {
+      const response = await fetch(apiPath('/api/stop'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ job_id: jobId }),

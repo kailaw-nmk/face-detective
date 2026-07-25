@@ -8,7 +8,7 @@ import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -59,6 +59,13 @@ app.add_middleware(
 )
 
 job_manager = JobManager()
+
+# Tailscale Serve のパスマウント用プレフィックス。
+# Serve 経由ではこのプレフィックスが剥がされて届き、直接アクセスでは剥がされないため、
+# 同じルーターを 2 通りのパスで登録して両経路を受け付ける。
+_PREFIX = "/face-detect"
+
+router = APIRouter()
 
 # ---------------------------------------------------------------------------
 # リクエスト / レスポンスモデル
@@ -115,7 +122,7 @@ class StopJobResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-@app.post("/api/validate-path", response_model=ValidatePathResponse)
+@router.post("/api/validate-path", response_model=ValidatePathResponse)
 async def validate_path(request: ValidatePathRequest) -> ValidatePathResponse:
     """指定パスの存在確認と画像ファイル件数を返す。
 
@@ -159,7 +166,7 @@ async def validate_path(request: ValidatePathRequest) -> ValidatePathResponse:
         )
 
 
-@app.post("/api/start", response_model=StartJobResponse)
+@router.post("/api/start", response_model=StartJobResponse)
 async def start_job(request: StartJobRequest) -> StartJobResponse:
     """顔検出・画像コピージョブをペンディング状態で登録する。
 
@@ -193,7 +200,7 @@ async def start_job(request: StartJobRequest) -> StartJobResponse:
     return StartJobResponse(job_id=job_id, dest_folder=dest_folder)
 
 
-@app.post("/api/stop", response_model=StopJobResponse)
+@router.post("/api/stop", response_model=StopJobResponse)
 async def stop_job(request: StopJobRequest) -> StopJobResponse:
     """実行中のジョブを停止（キャンセル）する。
 
@@ -208,7 +215,7 @@ async def stop_job(request: StopJobRequest) -> StopJobResponse:
     return StopJobResponse(success=success)
 
 
-@app.get("/api/status/{job_id}")
+@router.get("/api/status/{job_id}")
 async def get_status(job_id: str) -> dict:
     """ジョブの現在状態を返す。
 
@@ -224,7 +231,7 @@ async def get_status(job_id: str) -> dict:
     return status
 
 
-@app.websocket("/ws/{job_id}")
+@router.websocket("/ws/{job_id}")
 async def websocket_endpoint(websocket: WebSocket, job_id: str) -> None:
     """WebSocket 接続を受け付け、ジョブの進捗をリアルタイムに配信する。
 
@@ -293,3 +300,14 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str) -> None:
         logger.error("WebSocket エラー: %s", exc, exc_info=True)
     finally:
         logger.info("WebSocket セッション終了: job_id=%s", job_id)
+
+
+# ---------------------------------------------------------------------------
+# ルーター登録
+# ---------------------------------------------------------------------------
+# プレフィックス無し (直接アクセス用) と /face-detect 付き (Tailscale Serve の
+# パスマウント経由でプレフィックスが剥がれない直接アクセス用) の 2 系統を登録する。
+# StaticFiles のマウントより必ず前に登録すること (Starlette は登録順に照合するため、
+# "/" のマウントを先に置くと API/WS がすべて静的配信に飲み込まれる)。
+app.include_router(router)
+app.include_router(router, prefix=_PREFIX)

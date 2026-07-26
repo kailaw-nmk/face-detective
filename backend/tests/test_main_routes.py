@@ -101,3 +101,18 @@ def test_api_not_shadowed_by_static_mount(client: TestClient) -> None:
     resp = client.get("/api/status/no-such-job")
     assert resp.status_code == 200
     assert resp.json()["status"] == "not_found"
+
+
+def test_bare_prefix_redirects_to_index(client: TestClient) -> None:
+    """末尾スラッシュ無しの /face-detect が /face-detect/ へリダイレクトすること。"""
+    resp = client.get("/face-detect", follow_redirects=False)
+    assert resp.status_code == 307
+    assert resp.headers["location"] == "/face-detect/"
+
+
+@_needs_dist
+def test_bare_prefix_reaches_index_after_redirect(client: TestClient) -> None:
+    """リダイレクトを追跡すると index.html に到達すること。"""
+    resp = client.get("/face-detect", follow_redirects=True)
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]

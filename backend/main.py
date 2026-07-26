@@ -10,6 +10,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -312,6 +313,21 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str) -> None:
 # "/" のマウントを先に置くと API/WS がすべて静的配信に飲み込まれる)。
 app.include_router(router)
 app.include_router(router, prefix=_PREFIX)
+
+
+@app.get(_PREFIX, include_in_schema=False)
+async def redirect_bare_prefix() -> RedirectResponse:
+    """末尾スラッシュ無しの ``/face-detect`` を ``/face-detect/`` へリダイレクトする。
+
+    ``/face-detect`` プレフィックス付きのルーターを登録している都合上、
+    StaticFiles マウントによる自動リダイレクトが効かず 404 になるため、
+    明示的にリダイレクトする。Tailscale Serve 経由ではプレフィックスが
+    剥がされて届くためこの経路には入らない。
+
+    Returns:
+        ``/face-detect/`` への 307 リダイレクトレスポンス。
+    """
+    return RedirectResponse(url=f"{_PREFIX}/", status_code=307)
 
 
 # ---------------------------------------------------------------------------

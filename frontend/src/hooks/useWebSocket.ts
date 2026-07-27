@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import type { WSMessage } from '../types'
+import { wsUrl } from '../lib/basePath'
 
 /** useWebSocket フックの戻り値 */
 interface UseWebSocketResult {
@@ -27,8 +28,7 @@ export function useWebSocket(jobId: string | null): UseWebSocketResult {
       return
     }
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const url = `${protocol}//${window.location.host}/ws/${jobId}`
+    const url = wsUrl(`/ws/${jobId}`)
 
     let ws: WebSocket
 

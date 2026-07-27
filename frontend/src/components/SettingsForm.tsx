@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { ValidatePathResponse } from '../types'
+import { apiPath } from '../lib/basePath'
 
 /** 詳細設定のパラメータ */
 interface AdvancedSettings {
@@ -79,7 +80,7 @@ function SettingsForm({ onStart, disabled }: SettingsFormProps) {
     setValidation({ status: 'loading' })
 
     try {
-      const response = await fetch('/api/validate-path', {
+      const response = await fetch(apiPath('/api/validate-path'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: trimmed }),

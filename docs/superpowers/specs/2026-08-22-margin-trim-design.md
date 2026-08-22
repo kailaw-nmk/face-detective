@@ -49,11 +49,11 @@
 ```
 Image.open + exif_transpose
   ↓
-★ trim_margins()            ← 1 回目
+★ trim_image_margins()      ← 1 回目
   ↓
 見開き判定・分割
   ↓
-★ trim_margins()            ← 2 回目（分割後の各画像）
+★ trim_image_margins()      ← 2 回目（分割後の各画像）
   ↓
 顔検出 → 面積比算出
   ↓
@@ -105,6 +105,10 @@ Image.open + exif_transpose
 `spread_splitter.py` が既に 422 行あるため独立モジュールとする。責務は「1 枚の PIL 画像から
 余白を除いた矩形を求め、トリミングした画像を返す」ことのみ。ファイル I/O もジョブ状態も持たない。
 
+公開関数名は `trim_margins` ではなく **`trim_image_margins`** とする。`process_spread()` と
+`JobState` が `trim_margins` という名前の bool を持つため、同名だと関数がローカル変数に
+シャドウされ、参照時に `UnboundLocalError` を招くためである。
+
 #### パラメータ（モジュール冒頭に定数化）
 
 | 定数 | 値 | 意味 |
@@ -150,7 +154,7 @@ class TrimResult(TypedDict):
 `MORPH_CLOSE` は使わない。外接矩形の和を取るため穴埋めは不要であり、閉処理は無関係な成分を
 繋げるリスクと計算コストだけが残るため。
 
-#### `trim_margins(image: Image.Image) -> tuple[Image.Image, TrimResult]`
+#### `trim_image_margins(image: Image.Image) -> tuple[Image.Image, TrimResult]`
 
 `detect_content_bbox()` を呼び、安全弁を順に評価する。いずれかに該当した場合は
 **元の画像オブジェクトをそのまま返す**（`is` 比較で同一性を判定できる）。
@@ -180,11 +184,11 @@ class TrimResult(TypedDict):
 
 ```
 1. 画像を開く（EXIF 回転・RGB 変換）              … 既存
-2. trim_margins() を適用                          … 新規
+2. trim_image_margins() を適用                    … 新規
 3. detect_side_masks / crop_side_masks            … 既存
 4. detect_center_stripe / remove_stripe           … 既存
 5. 人物数カウント → 分割判定 → split_at_center     … 既存
-6. 返す各画像に trim_margins() を適用              … 新規
+6. 返す各画像に trim_image_margins() を適用        … 新規
 ```
 
 手順 3 はトリミング ON のとき実質的に no-op となるが、トリミング OFF 時の従来動作を保つため
@@ -195,8 +199,8 @@ class TrimResult(TypedDict):
 - `JobState` に `trim_margins: bool` を追加し、`start_job` / `_run_job` を経由して伝搬する
 - `_process_spread_file()`: `process_spread()` に `trim_margins=state.trim_margins` を渡す
 - `_process_file()`（通常経路。現在は `_run_job()` のループ内にインライン展開されている）:
-  - `trim_margins` が False → 従来どおり `detect_faces(file_path, ...)` で判定し `copy_image()`
-  - `trim_margins` が True → 画像を開いて `trim_margins()` を適用し、その結果の numpy 配列に
+  - `state.trim_margins` が False → 従来どおり `detect_faces(file_path, ...)` で判定し `copy_image()`
+  - `state.trim_margins` が True → 画像を開いて `trim_image_margins()` を適用し、その結果の numpy 配列に
     対して既存の `detect_faces_from_array()` で判定する。`trimmed=True` なら
     `save_spread_image()`（`suffix=""`）で再エンコード保存、`trimmed=False` なら
     `copy_image()` のバイトコピーに戻す
@@ -243,8 +247,8 @@ WebSocket に以下の形式でログを流す。
 | 全面黒 | 純黒のみ | `reason="no_content"`、不変 |
 | UI 部品の無視 | 白背景＋中央に大矩形＋隅に小さな黒矩形 | 小矩形が bbox に含まれない |
 | 2 ページ並び | 白ガターで隔てた 2 つのカラー矩形 | 両方を含む外接矩形になる |
-| 過剰トリミング防止 | 白背景の中央に 4×4 のみ | `reason="too_aggressive"`、不変 |
-| 出力サイズ下限 | 極端に細い帯状コンテンツ | `reason="too_small"`、不変 |
+| 過剰トリミング防止 | 1000×1000 の白背景の中央に 200×200（残率 4%） | `reason="too_aggressive"`、不変 |
+| 出力サイズ下限 | 1000×1000 の白背景に幅 20 の縦帯 | `reason="too_small"`、不変 |
 | 例外処理 | `detect_content_bbox` を monkeypatch して送出 | `reason="error"`、不変、ログ出力あり |
 
 既存 `tests/test_spread_splitter.py` には `trim_margins=True` を渡したときに 1 回目・2 回目の

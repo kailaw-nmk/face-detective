@@ -485,3 +485,64 @@ class TestCropSideMasks:
         result = crop_side_masks(img, 0, width)
 
         assert result is img, "トリミング不要時は同一オブジェクトを返すはず"
+
+
+# ---------------------------------------------------------------------------
+# process_spread の余白トリミング統合
+# ---------------------------------------------------------------------------
+
+class TestProcessSpreadTrimMargins:
+    """process_spread の trim_margins 引数のテストクラス。"""
+
+    def test_trim_margins_disabled_keeps_white_margin(self, tmp_path: Path) -> None:
+        """trim_margins=False では白余白がそのまま残ること（既存動作の保持）。"""
+        width, height = 800, 600
+        img = Image.new("RGB", (width, height), color=(255, 255, 255))
+        ImageDraw.Draw(img).rectangle((200, 100, 599, 499), fill=(120, 60, 60))
+        image_path = tmp_path / "margin.png"
+        img.save(image_path)
+
+        result = process_spread(image_path, _make_count_persons_fn(1))
+
+        assert result["action"] == "kept"
+        assert result["images"][0].size == (width, height)
+
+    def test_trim_margins_removes_white_border(self, tmp_path: Path) -> None:
+        """trim_margins=True で読み込み直後の白余白が除去されること。
+
+        800x600 の白背景に 400x400 のコンテンツを置く。トリミング後は縦横比 1.0 で
+        人物数 1 のため分割されず、コンテンツ矩形そのものが返る。
+        """
+        img = Image.new("RGB", (800, 600), color=(255, 255, 255))
+        ImageDraw.Draw(img).rectangle((200, 100, 599, 499), fill=(120, 60, 60))
+        image_path = tmp_path / "margin.png"
+        img.save(image_path)
+
+        result = process_spread(
+            image_path, _make_count_persons_fn(1), trim_margins=True
+        )
+
+        assert result["action"] == "kept"
+        assert result["images"][0].size == (400, 400)
+
+    def test_trim_margins_applies_after_split(self, tmp_path: Path) -> None:
+        """分割後の各画像に残った余白も除去されること。
+
+        1200x400 の白背景に 300x300 のページを 2 枚（左右）配置する。
+        1 回目のトリミングで外周が落ちて 800x300 になり、横長かつ人物数 2 のため
+        中央で 400x300 ずつに分割される。分割後の各画像には内側のガター由来の
+        白帯 100px が残るため、2 回目のトリミングで 300x300 になる。
+        """
+        img = Image.new("RGB", (1200, 400), color=(255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle((200, 50, 499, 349), fill=(120, 60, 60))
+        draw.rectangle((700, 50, 999, 349), fill=(60, 60, 120))
+        image_path = tmp_path / "spread.png"
+        img.save(image_path)
+
+        result = process_spread(
+            image_path, _make_count_persons_fn(2), trim_margins=True
+        )
+
+        assert result["action"] == "split"
+        assert [img.size for img in result["images"]] == [(300, 300), (300, 300)]

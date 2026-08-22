@@ -10,9 +10,13 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+from PIL import Image, ImageOps
+
 from face_detector import detect_faces, detect_faces_from_array
 from file_scanner import scan_folder
 from image_copier import copy_image, generate_dest_folder, save_spread_image
+from margin_trimmer import trim_image_margins
 from person_detector import count_persons
 from spread_splitter import process_spread
 
@@ -29,6 +33,7 @@ class JobState:
         dest_folder: Path,
         threshold: float,
         spread_split: bool = False,
+        trim_margins: bool = False,
         require_both_eyes: bool = False,
         min_eye_ratio: float = 0.25,
         min_face_score: float = 0.5,
@@ -42,6 +47,7 @@ class JobState:
             dest_folder: 画像移動先フォルダ。
             threshold: 顔面積比の閾値 (%)。
             spread_split: 見開き分割を有効にするかどうか。
+            trim_margins: 白／黒の余白トリミングを有効にするかどうか。
             require_both_eyes: 両目が映っている画像のみ抽出するかどうか。
             min_eye_ratio: 両目間距離 / 顔幅 の最小比率。
             min_face_score: 両目判定に必要な最低検出信頼度。
@@ -52,6 +58,7 @@ class JobState:
         self.dest_folder = dest_folder
         self.threshold = threshold
         self.spread_split = spread_split
+        self.trim_margins = trim_margins
         self.require_both_eyes = require_both_eyes
         self.min_eye_ratio = min_eye_ratio
         self.min_face_score = min_face_score
@@ -101,6 +108,7 @@ class JobManager:
         source_folder: str,
         threshold: float,
         spread_split: bool = False,
+        trim_margins: bool = False,
         require_both_eyes: bool = False,
         min_eye_ratio: float = 0.25,
         min_face_score: float = 0.5,
@@ -112,6 +120,7 @@ class JobManager:
             source_folder: 走査対象フォルダのパス文字列。
             threshold: 顔面積比の閾値 (%)。
             spread_split: 見開き分割を有効にするかどうか。
+            trim_margins: 白／黒の余白トリミングを有効にするかどうか。
             require_both_eyes: 両目が映っている画像のみ抽出するかどうか。
             min_eye_ratio: 両目間距離 / 顔幅 の最小比率。
             min_face_score: 両目判定に必要な最低検出信頼度。
@@ -127,6 +136,7 @@ class JobManager:
             "dest_folder": dest_folder,
             "threshold": threshold,
             "spread_split": spread_split,
+            "trim_margins": trim_margins,
             "require_both_eyes": require_both_eyes,
             "min_eye_ratio": min_eye_ratio,
             "min_face_score": min_face_score,
@@ -143,6 +153,7 @@ class JobManager:
         send_message: Any,
         job_id: str | None = None,
         spread_split: bool = False,
+        trim_margins: bool = False,
         require_both_eyes: bool = False,
         min_eye_ratio: float = 0.25,
         min_face_score: float = 0.5,
@@ -157,6 +168,7 @@ class JobManager:
             send_message: WebSocket へメッセージを送信するコルーチン関数。
             job_id: 使用するジョブ ID。None の場合は新規 UUID を生成する。
             spread_split: 見開き分割を有効にするかどうか。
+            trim_margins: 白／黒の余白トリミングを有効にするかどうか。
             require_both_eyes: 両目が映っている画像のみ抽出するかどうか。
             min_eye_ratio: 両目間距離 / 顔幅 の最小比率。
             min_face_score: 両目判定に必要な最低検出信頼度。
@@ -173,13 +185,17 @@ class JobManager:
             dest_folder=Path(dest_folder),
             threshold=threshold,
             spread_split=spread_split,
+            trim_margins=trim_margins,
             require_both_eyes=require_both_eyes,
             min_eye_ratio=min_eye_ratio,
             min_face_score=min_face_score,
             yolo_confidence=yolo_confidence,
         )
         self._jobs[job_id] = state
-        logger.info("ジョブを開始します: job_id=%s, spread_split=%s", job_id, spread_split)
+        logger.info(
+            "ジョブを開始します: job_id=%s, spread_split=%s, trim_margins=%s",
+            job_id, spread_split, trim_margins,
+        )
 
         asyncio.create_task(self._run_job(state, send_message))
         return job_id
@@ -262,24 +278,7 @@ class JobManager:
                 if state.spread_split:
                     self._process_spread_file(state, file_path)
                 else:
-                    result = detect_faces(
-                        file_path, state.threshold,
-                        min_eye_ratio=state.min_eye_ratio,
-                        min_face_score=state.min_face_score,
-                    )
-
-                    if result["should_move"] and (
-                        not state.require_both_eyes
-                        or result["both_eyes_visible"]
-                    ):
-                        copy_image(
-                            file_path, state.source_folder, state.dest_folder,
-                            face_ratio=result["max_face_ratio"],
-                            both_eyes_visible=result["both_eyes_visible"],
-                        )
-                        state.extracted += 1
-                    else:
-                        state.skipped += 1
+                    self._process_single_file(state, file_path)
 
             except Exception as exc:
                 logger.error(
@@ -348,6 +347,80 @@ class JobManager:
             state.errors,
         )
 
+    def _process_single_file(self, state: JobState, file_path: Path) -> None:
+        """見開き分割なしの通常経路で 1 ファイルを処理する。
+
+        ``state.trim_margins`` が無効な場合は従来どおりパス指定の顔検出を行い、
+        条件を満たせば ``shutil.copy2`` によるバイトコピーで保存する（無劣化）。
+
+        有効な場合は画像を開いて余白をトリミングし、その結果に対して顔検出を行う。
+        こうすることで顔面積比が「実際の写真に対する比率」になる。実際に
+        トリミングが発生した画像だけを再エンコードして保存し、発生しなかった
+        画像は従来どおりバイトコピーに戻すことで無駄な再圧縮を避ける。
+
+        Args:
+            state: 実行中のジョブ状態オブジェクト。
+            file_path: 処理対象の画像ファイルパス。
+        """
+        if not state.trim_margins:
+            result = detect_faces(
+                file_path, state.threshold,
+                min_eye_ratio=state.min_eye_ratio,
+                min_face_score=state.min_face_score,
+            )
+            if result["should_move"] and (
+                not state.require_both_eyes or result["both_eyes_visible"]
+            ):
+                copy_image(
+                    file_path, state.source_folder, state.dest_folder,
+                    face_ratio=result["max_face_ratio"],
+                    both_eyes_visible=result["both_eyes_visible"],
+                )
+                state.extracted += 1
+            else:
+                state.skipped += 1
+            return
+
+        raw_image = Image.open(file_path)
+        raw_image = ImageOps.exif_transpose(raw_image)
+        image = raw_image.convert("RGB")
+        image, trim_info = trim_image_margins(image)
+        if trim_info["trimmed"]:
+            logger.info(
+                "余白をトリミングしました: %s — 残率 %.0f%%",
+                file_path, trim_info["keep_ratio"] * 100,
+            )
+
+        image_array = np.array(image, dtype=np.uint8)
+        result = detect_faces_from_array(
+            image_array, image.width, image.height, state.threshold,
+            min_eye_ratio=state.min_eye_ratio,
+            min_face_score=state.min_face_score,
+        )
+
+        if not (
+            result["should_move"]
+            and (not state.require_both_eyes or result["both_eyes_visible"])
+        ):
+            state.skipped += 1
+            return
+
+        if trim_info["trimmed"]:
+            # トリミングで画素が変わっているため再エンコードが必要
+            save_spread_image(
+                image, file_path, "",
+                state.source_folder, state.dest_folder,
+                face_ratio=result["max_face_ratio"],
+                both_eyes_visible=result["both_eyes_visible"],
+            )
+        else:
+            copy_image(
+                file_path, state.source_folder, state.dest_folder,
+                face_ratio=result["max_face_ratio"],
+                both_eyes_visible=result["both_eyes_visible"],
+            )
+        state.extracted += 1
+
     def _process_spread_file(self, state: JobState, file_path: Path) -> None:
         """人物検出で見開き分割を行い、各画像に顔検出・コピーを適用する。
 
@@ -355,14 +428,15 @@ class JobManager:
             state: 実行中のジョブ状態オブジェクト。
             file_path: 処理対象の画像ファイルパス。
         """
-        import numpy as np
 
         def _count_fn(arr: np.ndarray) -> int:
             # 全体画像の人物ボックス総数で判定する
             # （左右分割カウントは中央またぎの 1 人を 2 人と誤カウントするため使わない）
             return count_persons(arr, confidence=state.yolo_confidence)
 
-        spread_result = process_spread(file_path, _count_fn)
+        spread_result = process_spread(
+            file_path, _count_fn, trim_margins=state.trim_margins
+        )
 
         if spread_result["action"] == "split":
             state.split_count += 1

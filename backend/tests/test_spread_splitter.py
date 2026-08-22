@@ -11,7 +11,6 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import numpy as np
-import pytest
 from PIL import Image, ImageDraw
 
 from spread_splitter import (

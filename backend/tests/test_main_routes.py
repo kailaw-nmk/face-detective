@@ -116,3 +116,39 @@ def test_bare_prefix_reaches_index_after_redirect(client: TestClient) -> None:
     resp = client.get("/face-detect", follow_redirects=True)
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]
+
+
+@pytest.mark.parametrize("prefix", PREFIXES)
+def test_start_accepts_trim_margins(
+    client: TestClient, tmp_path, prefix: str,
+) -> None:
+    """POST /api/start が trim_margins を受け取り pending に保持すること。"""
+    from main import job_manager
+
+    resp = client.post(
+        f"{prefix}/api/start",
+        json={
+            "source_folder": str(tmp_path),
+            "threshold": 5.0,
+            "trim_margins": True,
+        },
+    )
+    assert resp.status_code == 200
+    job_id = resp.json()["job_id"]
+    assert job_manager._pending[job_id]["trim_margins"] is True
+
+
+@pytest.mark.parametrize("prefix", PREFIXES)
+def test_start_defaults_trim_margins_to_false(
+    client: TestClient, tmp_path, prefix: str,
+) -> None:
+    """trim_margins を省略した場合は False になること（後方互換）。"""
+    from main import job_manager
+
+    resp = client.post(
+        f"{prefix}/api/start",
+        json={"source_folder": str(tmp_path), "threshold": 5.0},
+    )
+    assert resp.status_code == 200
+    job_id = resp.json()["job_id"]
+    assert job_manager._pending[job_id]["trim_margins"] is False

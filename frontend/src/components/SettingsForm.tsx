@@ -16,6 +16,7 @@ interface SettingsFormProps {
     source: string,
     threshold: number,
     spreadSplit: boolean,
+    trimMargins: boolean,
     requireBothEyes: boolean,
     advanced: AdvancedSettings,
   ) => void
@@ -45,6 +46,9 @@ function SettingsForm({ onStart, disabled }: SettingsFormProps) {
   })
   const [spreadSplit, setSpreadSplit] = useState(() => {
     return localStorage.getItem('face-detective-spreadSplit') === 'true'
+  })
+  const [trimMargins, setTrimMargins] = useState(() => {
+    return localStorage.getItem('face-detective-trimMargins') === 'true'
   })
   const [requireBothEyes, setRequireBothEyes] = useState(() => {
     return localStorage.getItem('face-detective-requireBothEyes') === 'true'
@@ -112,12 +116,13 @@ function SettingsForm({ onStart, disabled }: SettingsFormProps) {
     localStorage.setItem('face-detective-sourcePath', sourcePath.trim())
     localStorage.setItem('face-detective-threshold', String(threshold))
     localStorage.setItem('face-detective-spreadSplit', String(spreadSplit))
+    localStorage.setItem('face-detective-trimMargins', String(trimMargins))
     localStorage.setItem('face-detective-requireBothEyes', String(requireBothEyes))
     localStorage.setItem('face-detective-minEyeRatio', String(minEyeRatio))
     localStorage.setItem('face-detective-minFaceScore', String(minFaceScore))
     localStorage.setItem('face-detective-yoloConfidence', String(yoloConfidence))
 
-    onStart(sourcePath.trim(), threshold, spreadSplit, requireBothEyes, {
+    onStart(sourcePath.trim(), threshold, spreadSplit, trimMargins, requireBothEyes, {
       minEyeRatio: minEyeRatio / 100,
       minFaceScore: minFaceScore / 100,
       yoloConfidence: yoloConfidence / 100,
@@ -213,6 +218,23 @@ function SettingsForm({ onStart, disabled }: SettingsFormProps) {
         </label>
         <p className="text-xs text-gray-400 ml-6">
           見開き画像の中央ストライプを検出し、2人の人物が検出された場合に左右に分割します
+        </p>
+      </div>
+
+      {/* 余白トリミングオプション */}
+      <div className="space-y-1">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={trimMargins}
+            onChange={(e) => setTrimMargins(e.target.checked)}
+            disabled={disabled}
+            className="w-4 h-4 text-blue-500 rounded border-gray-300 focus:ring-blue-500 disabled:cursor-not-allowed"
+          />
+          <span className="text-sm font-medium text-gray-700">余白（白・黒）をトリミング</span>
+        </label>
+        <p className="text-xs text-gray-400 ml-6">
+          電子書籍リーダーのスクリーンショットなど、写真の周囲に白または黒の余白がある画像から写真部分だけを切り出します。顔サイズの割合も切り出し後の写真を基準に計算されます
         </p>
       </div>
 

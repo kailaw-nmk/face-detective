@@ -18,6 +18,7 @@ from typing import Any, Callable, TypedDict
 import numpy as np
 from PIL import Image, ImageOps
 
+from margin_trimmer import trim_image_margins
 from pillow_heif import register_heif_opener
 
 register_heif_opener()
@@ -297,27 +298,66 @@ def split_at_center(image: Image.Image) -> tuple[Image.Image, Image.Image]:
     return left, right
 
 
+def _trim_output_images(
+    images: list[Image.Image],
+    image_path: Path,
+) -> list[Image.Image]:
+    """分割後の各画像に残っている余白をトリミングする。
+
+    中央で分割すると、綴じ目のガター由来の白帯が各画像の内側の端に残る。
+    1 回目（読み込み直後）のトリミングでは外周しか落ちないため、ここで再度適用する。
+
+    Args:
+        images: トリミング対象の画像リスト。
+        image_path: ログ出力用の元画像パス。
+
+    Returns:
+        トリミング後の画像リスト。順序は入力と同じ。
+    """
+    trimmed_images: list[Image.Image] = []
+    for index, img in enumerate(images):
+        trimmed, info = trim_image_margins(img)
+        if info["trimmed"]:
+            logger.info(
+                "分割後の余白をトリミングしました (%d/%d): %s — %dx%d → %dx%d",
+                index + 1,
+                len(images),
+                image_path,
+                img.width,
+                img.height,
+                trimmed.width,
+                trimmed.height,
+            )
+        trimmed_images.append(trimmed)
+    return trimmed_images
+
+
 def process_spread(
     image_path: Path,
     count_persons_fn: Callable[[np.ndarray], int],
+    trim_margins: bool = False,
 ) -> SpreadResult:
     """見開き画像を処理し、黒マスク除去・ストライプ除去・人物検出・分割を行う。
 
     処理フロー:
         1. EXIF 情報を考慮して画像を開き、RGB に変換する
-        2. ``detect_side_masks()`` で左右の黒マスク（縦の黒帯）を検出し、
+        2. ``trim_margins`` が有効なら ``trim_image_margins()`` で余白を除去する
+        3. ``detect_side_masks()`` で左右の黒マスク（縦の黒帯）を検出し、
            ``crop_side_masks()`` でトリミングする（分割の有無に関わらず常に適用）
-        3. ``detect_center_stripe()`` で中央ストライプを検出する
-        4. ストライプが検出された場合は ``remove_stripe()`` で除去する
-        5. ``count_persons_fn`` で人物数を取得する
-        6. 黒マスク除去後が横長（アスペクト比 >= ``MIN_SPREAD_ASPECT``）かつ
+        4. ``detect_center_stripe()`` で中央ストライプを検出する
+        5. ストライプが検出された場合は ``remove_stripe()`` で除去する
+        6. ``count_persons_fn`` で人物数を取得する
+        7. 黒マスク除去後が横長（アスペクト比 >= ``MIN_SPREAD_ASPECT``）かつ
            人物数 >= 2 の両方が成立した場合のみ ``split_at_center()`` で左右に分割して返す
-        7. それ以外の場合はトリミング済み画像 1 枚をそのまま返す（単ページは縦長になり分割されない）
+        8. それ以外の場合はトリミング済み画像 1 枚をそのまま返す（単ページは縦長になり分割されない）
+        9. ``trim_margins`` が有効なら、返す各画像に再度余白トリミングを適用する
 
     Args:
         image_path: 処理対象の画像ファイルパス。
         count_persons_fn: 人物検出関数。シグネチャは
             ``(image_array) -> int`` であり、検出された人物数を返す。
+        trim_margins: 白／黒の余白トリミングを有効にするかどうか。有効な場合、
+            読み込み直後と分割後の 2 箇所で ``trim_image_margins()`` を適用する。
 
     Returns:
         :class:`SpreadResult` 辞書:
@@ -331,6 +371,15 @@ def process_spread(
     raw_image = Image.open(image_path)
     raw_image = ImageOps.exif_transpose(raw_image)
     original = raw_image.convert("RGB")
+
+    if trim_margins:
+        original, trim_info = trim_image_margins(original)
+        if trim_info["trimmed"]:
+            logger.info(
+                "読み込み時に余白をトリミングしました: %s — 残率 %.0f%%",
+                image_path,
+                trim_info["keep_ratio"] * 100,
+            )
 
     logger.debug("画像を読み込みました: %s (%dx%d)", image_path, *original.size)
 
@@ -399,11 +448,14 @@ def process_spread(
             "見開きを左右に分割します: %s — アスペクト比=%.2f, 人物数=%d",
             image_path, aspect_ratio, person_count,
         )
+        output_images = [left_img, right_img]
+        if trim_margins:
+            output_images = _trim_output_images(output_images, image_path)
         return SpreadResult(
             action="split",
             face_count=person_count,
             stripe_detected=stripe_detected,
-            images=[left_img, right_img],
+            images=output_images,
             suffixes=["_L", "_R"],
             face_detection=None,
         )
@@ -412,11 +464,14 @@ def process_spread(
             "分割なし（kept）: %s — アスペクト比=%.2f, 人物数=%d, ストライプ=%s",
             image_path, aspect_ratio, person_count, stripe_detected,
         )
+        output_images = [working_image]
+        if trim_margins:
+            output_images = _trim_output_images(output_images, image_path)
         return SpreadResult(
             action="kept",
             face_count=person_count,
             stripe_detected=stripe_detected,
-            images=[working_image],
+            images=output_images,
             suffixes=[""],
             face_detection=None,
         )

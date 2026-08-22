@@ -53,6 +53,7 @@ function App() {
     source: string,
     threshold: number,
     spreadSplit: boolean,
+    trimMargins: boolean,
     requireBothEyes: boolean,
     advanced: { minEyeRatio: number; minFaceScore: number; yoloConfidence: number },
   ) => {
@@ -68,6 +69,7 @@ function App() {
           source_folder: source,
           threshold,
           spread_split: spreadSplit,
+          trim_margins: trimMargins,
           require_both_eyes: requireBothEyes,
           min_eye_ratio: advanced.minEyeRatio,
           min_face_score: advanced.minFaceScore,

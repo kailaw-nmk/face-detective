@@ -61,8 +61,10 @@ def detect_content_bbox(image: Image.Image) -> tuple[int, int, int, int] | None:
         有効な成分が 1 つもない場合は None。
     """
     rgb = image.convert("RGB")
-    arr = np.asarray(rgb, dtype=np.float32)      # shape: (H, W, 3)
-    luminance = arr.mean(axis=2)                  # shape: (H, W)
+    # (H, W, 3) の float32 中間バッファを作らずに輝度を求める。
+    # 大きな画像でのメモリスパイクを避けるため、uint8 のまま mean の累積型だけ float32 にする。
+    arr = np.asarray(rgb, dtype=np.uint8)         # shape: (H, W, 3)
+    luminance = arr.mean(axis=2, dtype=np.float32)  # shape: (H, W)
     height, width = luminance.shape
 
     margin_mask = (luminance > WHITE_THRESHOLD) | (luminance < BLACK_THRESHOLD)
@@ -72,7 +74,7 @@ def detect_content_bbox(image: Image.Image) -> tuple[int, int, int, int] | None:
     content_mask = cv2.morphologyEx(content_mask, cv2.MORPH_OPEN, kernel)
 
     count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(
-        content_mask, 8
+        content_mask, connectivity=8
     )
 
     total_area = float(width * height)
@@ -158,7 +160,7 @@ def trim_image_margins(image: Image.Image) -> tuple[Image.Image, TrimResult]:
             trimmed=False, bbox=full_bbox, keep_ratio=1.0, reason="too_aggressive"
         )
 
-    logger.info(
+    logger.debug(
         "余白をトリミングしました: %dx%d → %dx%d (残率 %.0f%%)",
         width,
         height,

@@ -3,7 +3,7 @@ uvicorn[standard]
 websockets
 mediapipe
 ultralytics
-opencv-python
+opencv-contrib-python
 Pillow
 pillow-heif
 ruff

@@ -50,6 +50,39 @@ def _make_state(
     return state, image_path
 
 
+def _make_no_margin_state(tmp_path: Path) -> tuple[JobState, Path]:
+    """余白が存在しない画像の JobState と入力画像パスを作成する。
+
+    全面をミッドグレーの単色で塗りつぶした画像を作る。白でも黒でもない
+    ため画像全体がコンテンツとみなされ、``trim_image_margins()`` は
+    ``bbox == full_bbox`` となって ``reason="no_margin"``（トリミング未発生）
+    を返す。
+
+    Args:
+        tmp_path: pytest の一時ディレクトリ。
+
+    Returns:
+        (JobState, 入力画像パス) のタプル。trim_margins は常に True。
+    """
+    source = tmp_path / "src"
+    dest = tmp_path / "dest"
+    source.mkdir()
+    dest.mkdir()
+
+    img = Image.new("RGB", (800, 600), color=(128, 128, 128))
+    image_path = source / "page.png"
+    img.save(image_path)
+
+    state = JobState(
+        job_id="test-job-no-margin",
+        source_folder=source,
+        dest_folder=dest,
+        threshold=1.0,
+        trim_margins=True,
+    )
+    return state, image_path
+
+
 def _patch_face_detection(monkeypatch: pytest.MonkeyPatch) -> None:
     """顔検出を「常に抽出対象」を返すモックに差し替える。
 
@@ -108,6 +141,35 @@ class TestProcessSingleFile:
         saved = list(state.dest_folder.rglob("*.png"))
         assert len(saved) == 1
         assert Image.open(saved[0]).size == (800, 600)
+        assert state.extracted == 1
+
+    def test_falls_back_to_copy_when_trim_enabled_but_no_margin(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """trim_margins=True でも余白が無い画像は copy_image でコピーされること。
+
+        ``trim_image_margins()`` が ``trimmed=False``（余白なし）を返す場合、
+        画素は変化していないため再エンコード（``save_spread_image``）ではなく
+        従来どおりのバイトコピー（``copy_image``）にフォールバックする。
+        この無劣化コピーの維持は設計判断の一つであり、将来
+        ``save_spread_image`` へ一本化するリファクタが入っても検出できるよう
+        回帰テストとして固定する。
+        """
+        _patch_face_detection(monkeypatch)
+        copy_image_spy = MagicMock(wraps=job_manager_module.copy_image)
+        save_spread_image_spy = MagicMock(
+            wraps=job_manager_module.save_spread_image
+        )
+        monkeypatch.setattr(job_manager_module, "copy_image", copy_image_spy)
+        monkeypatch.setattr(
+            job_manager_module, "save_spread_image", save_spread_image_spy
+        )
+        state, image_path = _make_no_margin_state(tmp_path)
+
+        JobManager()._process_single_file(state, image_path)
+
+        copy_image_spy.assert_called_once()
+        save_spread_image_spy.assert_not_called()
         assert state.extracted == 1
 
     def test_trims_and_reencodes_when_enabled(

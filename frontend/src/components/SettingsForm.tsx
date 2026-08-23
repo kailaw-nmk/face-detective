@@ -7,6 +7,7 @@ interface AdvancedSettings {
   minEyeRatio: number
   minFaceScore: number
   yoloConfidence: number
+  dedupeMaxDistance: number
 }
 
 /** SettingsForm コンポーネントの Props */
@@ -17,6 +18,7 @@ interface SettingsFormProps {
     threshold: number,
     spreadSplit: boolean,
     trimMargins: boolean,
+    dedupe: boolean,
     requireBothEyes: boolean,
     advanced: AdvancedSettings,
   ) => void
@@ -49,6 +51,14 @@ function SettingsForm({ onStart, disabled }: SettingsFormProps) {
   })
   const [trimMargins, setTrimMargins] = useState(() => {
     return localStorage.getItem('face-detective-trimMargins') === 'true'
+  })
+  const [dedupe, setDedupe] = useState(() => {
+    return localStorage.getItem('face-detective-dedupe') === 'true'
+  })
+  const [dedupeMaxDistance, setDedupeMaxDistance] = useState(() => {
+    const saved = localStorage.getItem('face-detective-dedupeMaxDistance')
+    const parsed = saved !== null ? Number(saved) : NaN
+    return Number.isFinite(parsed) && parsed >= 0 && parsed <= 32 ? parsed : 0
   })
   const [requireBothEyes, setRequireBothEyes] = useState(() => {
     return localStorage.getItem('face-detective-requireBothEyes') === 'true'
@@ -117,15 +127,18 @@ function SettingsForm({ onStart, disabled }: SettingsFormProps) {
     localStorage.setItem('face-detective-threshold', String(threshold))
     localStorage.setItem('face-detective-spreadSplit', String(spreadSplit))
     localStorage.setItem('face-detective-trimMargins', String(trimMargins))
+    localStorage.setItem('face-detective-dedupe', String(dedupe))
+    localStorage.setItem('face-detective-dedupeMaxDistance', String(dedupeMaxDistance))
     localStorage.setItem('face-detective-requireBothEyes', String(requireBothEyes))
     localStorage.setItem('face-detective-minEyeRatio', String(minEyeRatio))
     localStorage.setItem('face-detective-minFaceScore', String(minFaceScore))
     localStorage.setItem('face-detective-yoloConfidence', String(yoloConfidence))
 
-    onStart(sourcePath.trim(), threshold, spreadSplit, trimMargins, requireBothEyes, {
+    onStart(sourcePath.trim(), threshold, spreadSplit, trimMargins, dedupe, requireBothEyes, {
       minEyeRatio: minEyeRatio / 100,
       minFaceScore: minFaceScore / 100,
       yoloConfidence: yoloConfidence / 100,
+      dedupeMaxDistance,
     })
   }
 
@@ -238,6 +251,23 @@ function SettingsForm({ onStart, disabled }: SettingsFormProps) {
         </p>
       </div>
 
+      {/* 重複除外オプション */}
+      <div className="space-y-1">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={dedupe}
+            onChange={(e) => setDedupe(e.target.checked)}
+            disabled={disabled}
+            className="w-4 h-4 text-blue-500 rounded border-gray-300 focus:ring-blue-500 disabled:cursor-not-allowed"
+          />
+          <span className="text-sm font-medium text-gray-700">重複画像を除外</span>
+        </label>
+        <p className="text-xs text-gray-400 ml-6">
+          フォルダ内の同じ画像を検出し、2 枚目以降を保存先の _duplicates フォルダへ退避します。判定の厳しさは詳細設定で変えられます
+        </p>
+      </div>
+
       {/* 両目フィルタオプション */}
       <div className="space-y-1">
         <label className="flex items-center gap-2 cursor-pointer">
@@ -276,6 +306,28 @@ function SettingsForm({ onStart, disabled }: SettingsFormProps) {
 
         {showAdvanced && (
           <div className="mt-3 space-y-4 pl-2 border-l-2 border-gray-200">
+
+            {/* 重複判定の許容距離 */}
+            <div className="space-y-1">
+              <div className="flex justify-between items-center">
+                <label className="text-xs font-medium text-gray-600">重複判定の許容距離</label>
+                <span className="text-xs font-semibold text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded">
+                  {dedupeMaxDistance}
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={32}
+                value={dedupeMaxDistance}
+                onChange={(e) => setDedupeMaxDistance(Number(e.target.value))}
+                disabled={disabled || !dedupe}
+                className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-gray-500 disabled:cursor-not-allowed"
+              />
+              <p className="text-xs text-gray-400">
+                0 は完全に同じ画像のみを除外します。上げると「表紙の文字入り版」のような同一写真の別バージョンも拾いますが、別の写真を誤検出する可能性が上がります
+              </p>
+            </div>
 
             {/* 顔検出信頼度 */}
             <div className="space-y-1">

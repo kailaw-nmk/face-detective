@@ -9,7 +9,12 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from image_copier import copy_image, generate_dest_folder
+from image_copier import (
+    DUPLICATES_DIR_NAME,
+    copy_image,
+    copy_to_duplicates,
+    generate_dest_folder,
+)
 
 
 def _create_image_file(path: Path, size: tuple[int, int] = (10, 10)) -> Path:
@@ -216,3 +221,68 @@ class TestCopyImageErrorHandling:
             copy_image(missing_src, source_root, tmp_dest_dir)
 
         assert str(missing_src) in str(exc_info.value)
+
+
+class TestCopyToDuplicates:
+    """copy_to_duplicates のテストクラス。"""
+
+    def test_copies_into_duplicates_folder(
+        self, tmp_source_dir: Path, tmp_dest_dir: Path
+    ) -> None:
+        """_duplicates フォルダ配下にコピーされること。"""
+        src = tmp_source_dir / "dup.png"
+        Image.new("RGB", (20, 20), (10, 20, 30)).save(src)
+
+        result = copy_to_duplicates(
+            src, tmp_source_dir, tmp_dest_dir, Path("first.png"), 0
+        )
+
+        assert result == tmp_dest_dir / DUPLICATES_DIR_NAME / "dup.png"
+        assert result.exists()
+        assert src.exists()  # 元ファイルは残る
+
+    def test_preserves_subfolder_structure(
+        self, tmp_source_dir: Path, tmp_dest_dir: Path
+    ) -> None:
+        """入力フォルダからの相対パスが保持されること。"""
+        sub = tmp_source_dir / "a" / "b"
+        sub.mkdir(parents=True)
+        src = sub / "dup.png"
+        Image.new("RGB", (20, 20), (10, 20, 30)).save(src)
+
+        result = copy_to_duplicates(
+            src, tmp_source_dir, tmp_dest_dir, Path("first.png"), 0
+        )
+
+        assert result == tmp_dest_dir / DUPLICATES_DIR_NAME / "a" / "b" / "dup.png"
+        assert result.exists()
+
+    def test_renames_on_name_collision(
+        self, tmp_source_dir: Path, tmp_dest_dir: Path
+    ) -> None:
+        """退避先で名前が衝突したら連番を付けること。"""
+        src = tmp_source_dir / "dup.png"
+        Image.new("RGB", (20, 20), (10, 20, 30)).save(src)
+        existing = tmp_dest_dir / DUPLICATES_DIR_NAME
+        existing.mkdir(parents=True)
+        (existing / "dup.png").write_bytes(b"placeholder")
+
+        result = copy_to_duplicates(
+            src, tmp_source_dir, tmp_dest_dir, Path("first.png"), 0
+        )
+
+        assert result.name == "dup_001.png"
+        assert result.exists()
+
+    def test_raises_when_source_missing(
+        self, tmp_source_dir: Path, tmp_dest_dir: Path
+    ) -> None:
+        """存在しないファイルを渡すと例外になること。"""
+        with pytest.raises((FileNotFoundError, OSError)):
+            copy_to_duplicates(
+                tmp_source_dir / "missing.png",
+                tmp_source_dir,
+                tmp_dest_dir,
+                Path("first.png"),
+                0,
+            )

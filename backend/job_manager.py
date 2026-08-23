@@ -8,19 +8,38 @@ import asyncio
 import logging
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 from PIL import Image, ImageOps
 
 from face_detector import detect_faces, detect_faces_from_array
 from file_scanner import scan_folder
-from image_copier import copy_image, generate_dest_folder, save_spread_image
+from image_copier import (
+    copy_image,
+    copy_to_duplicates,
+    generate_dest_folder,
+    save_spread_image,
+)
+from image_hasher import DuplicateIndex, compute_dhash
 from margin_trimmer import trim_image_margins
 from person_detector import count_persons
 from spread_splitter import process_spread
 
 logger = logging.getLogger(__name__)
+
+
+class DedupeOutcome(NamedTuple):
+    """重複判定の結果と、下流へ引き継ぐ情報。
+
+    ``trimmed`` は ``image`` が実際にトリミングされたかどうか。呼び出し側はこの値で
+    「再エンコードして保存するか、バイトコピーで無劣化のまま保存するか」を決めるため、
+    画像そのものと同じくらい重要な戻り値である。
+    """
+
+    is_duplicate: bool          # 重複と判定されたか
+    image: Image.Image | None   # 下流へ渡す画像。重複の場合は None
+    trimmed: bool               # image が実際にトリミングされたか
 
 
 class JobState:
@@ -38,6 +57,8 @@ class JobState:
         min_eye_ratio: float = 0.25,
         min_face_score: float = 0.5,
         yolo_confidence: float = 0.2,
+        dedupe: bool = False,
+        dedupe_max_distance: int = 0,
     ) -> None:
         """ジョブ状態を初期化する。
 
@@ -52,6 +73,8 @@ class JobState:
             min_eye_ratio: 両目間距離 / 顔幅 の最小比率。
             min_face_score: 両目判定に必要な最低検出信頼度。
             yolo_confidence: YOLO 人物検出の信頼度閾値。
+            dedupe: 重複画像の除外を有効にするかどうか。
+            dedupe_max_distance: 重複とみなす最大ハミング距離（256bit 中）。
         """
         self.job_id = job_id
         self.source_folder = source_folder
@@ -63,6 +86,10 @@ class JobState:
         self.min_eye_ratio = min_eye_ratio
         self.min_face_score = min_face_score
         self.yolo_confidence = yolo_confidence
+        self.dedupe = dedupe
+        self.dedupe_max_distance = dedupe_max_distance
+        # ジョブごとに独立したインデックスを持つ（過去のジョブとは照合しない）
+        self.duplicate_index = DuplicateIndex(max_distance=dedupe_max_distance)
 
         self.status: str = "running"
         self.total: int = 0
@@ -71,6 +98,7 @@ class JobState:
         self.skipped: int = 0
         self.errors: int = 0
         self.split_count: int = 0
+        self.duplicates: int = 0
         self.error_files: list[str] = []
         self.current_file: str = ""
         self.cancelled: bool = False
@@ -113,6 +141,8 @@ class JobManager:
         min_eye_ratio: float = 0.25,
         min_face_score: float = 0.5,
         yolo_confidence: float = 0.2,
+        dedupe: bool = False,
+        dedupe_max_distance: int = 0,
     ) -> tuple[str, str]:
         """ジョブをペンディング状態で登録し、(job_id, dest_folder) を返す。
 
@@ -125,6 +155,8 @@ class JobManager:
             min_eye_ratio: 両目間距離 / 顔幅 の最小比率。
             min_face_score: 両目判定に必要な最低検出信頼度。
             yolo_confidence: YOLO 人物検出の信頼度閾値。
+            dedupe: 重複画像の除外を有効にするかどうか。
+            dedupe_max_distance: 重複とみなす最大ハミング距離（256bit 中）。
 
         Returns:
             登録されたジョブ ID 文字列と、自動生成された保存先フォルダパス文字列のタプル。
@@ -141,6 +173,8 @@ class JobManager:
             "min_eye_ratio": min_eye_ratio,
             "min_face_score": min_face_score,
             "yolo_confidence": yolo_confidence,
+            "dedupe": dedupe,
+            "dedupe_max_distance": dedupe_max_distance,
         }
         logger.info("ジョブを登録しました (pending): job_id=%s", job_id)
         return job_id, dest_folder
@@ -158,6 +192,8 @@ class JobManager:
         min_eye_ratio: float = 0.25,
         min_face_score: float = 0.5,
         yolo_confidence: float = 0.2,
+        dedupe: bool = False,
+        dedupe_max_distance: int = 0,
     ) -> str:
         """新規ジョブを作成して非同期タスクとして起動する。
 
@@ -173,6 +209,8 @@ class JobManager:
             min_eye_ratio: 両目間距離 / 顔幅 の最小比率。
             min_face_score: 両目判定に必要な最低検出信頼度。
             yolo_confidence: YOLO 人物検出の信頼度閾値。
+            dedupe: 重複画像の除外を有効にするかどうか。
+            dedupe_max_distance: 重複とみなす最大ハミング距離（256bit 中）。
 
         Returns:
             ジョブ ID 文字列。
@@ -190,11 +228,13 @@ class JobManager:
             min_eye_ratio=min_eye_ratio,
             min_face_score=min_face_score,
             yolo_confidence=yolo_confidence,
+            dedupe=dedupe,
+            dedupe_max_distance=dedupe_max_distance,
         )
         self._jobs[job_id] = state
         logger.info(
-            "ジョブを開始します: job_id=%s, spread_split=%s, trim_margins=%s",
-            job_id, spread_split, trim_margins,
+            "ジョブを開始します: job_id=%s, spread_split=%s, trim_margins=%s, dedupe=%s",
+            job_id, spread_split, trim_margins, dedupe,
         )
 
         asyncio.create_task(self._run_job(state, send_message))
@@ -275,10 +315,17 @@ class JobManager:
             state.current_file = str(file_path)
 
             try:
-                if state.spread_split:
-                    self._process_spread_file(state, file_path)
-                else:
-                    self._process_single_file(state, file_path)
+                outcome = DedupeOutcome(is_duplicate=False, image=None, trimmed=False)
+                if state.dedupe:
+                    outcome = self._check_duplicate(state, file_path)
+
+                if not outcome.is_duplicate:
+                    if state.spread_split:
+                        self._process_spread_file(state, file_path, outcome.image)
+                    else:
+                        self._process_single_file(
+                            state, file_path, outcome.image, outcome.trimmed
+                        )
 
             except Exception as exc:
                 logger.error(
@@ -303,6 +350,7 @@ class JobManager:
                     "skipped": state.skipped,
                     "errors": state.errors,
                     "split_count": state.split_count,
+                    "duplicates": state.duplicates,
                 },
                 ensure_ascii=False,
             )
@@ -326,6 +374,7 @@ class JobManager:
                 "skipped": state.skipped,
                 "errors": state.errors,
                 "split_count": state.split_count,
+                "duplicates": state.duplicates,
                 "error_files": state.error_files,
             },
             ensure_ascii=False,
@@ -338,16 +387,24 @@ class JobManager:
             )
 
         logger.info(
-            "ジョブ完了: job_id=%s, 合計=%d, 抽出=%d, スキップ=%d, 分割=%d, エラー=%d",
+            "ジョブ完了: job_id=%s, 合計=%d, 抽出=%d, スキップ=%d, 分割=%d, "
+            "重複=%d, エラー=%d",
             state.job_id,
             state.total,
             state.extracted,
             state.skipped,
             state.split_count,
+            state.duplicates,
             state.errors,
         )
 
-    def _process_single_file(self, state: JobState, file_path: Path) -> None:
+    def _process_single_file(
+        self,
+        state: JobState,
+        file_path: Path,
+        preloaded: Image.Image | None = None,
+        preloaded_trimmed: bool = False,
+    ) -> None:
         """見開き分割なしの通常経路で 1 ファイルを処理する。
 
         ``state.trim_margins`` が無効な場合は従来どおりパス指定の顔検出を行い、
@@ -361,6 +418,8 @@ class JobManager:
         Args:
             state: 実行中のジョブ状態オブジェクト。
             file_path: 処理対象の画像ファイルパス。
+            preloaded: 重複判定で読み込み済みの画像。あれば再利用する。
+            preloaded_trimmed: preloaded が実際にトリミングされているか。
         """
         if not state.trim_margins:
             result = detect_faces(
@@ -381,15 +440,22 @@ class JobManager:
                 state.skipped += 1
             return
 
-        raw_image = Image.open(file_path)
-        raw_image = ImageOps.exif_transpose(raw_image)
-        image = raw_image.convert("RGB")
-        image, trim_info = trim_image_margins(image)
-        if trim_info["trimmed"]:
-            logger.info(
-                "余白をトリミングしました: %s — 残率 %.0f%%",
-                file_path, trim_info["keep_ratio"] * 100,
-            )
+        if preloaded is not None:
+            # 重複判定で読み込み・トリミング済みの画像を再利用する
+            image = preloaded
+            was_trimmed = preloaded_trimmed
+        else:
+            raw_image = Image.open(file_path)
+            raw_image = ImageOps.exif_transpose(raw_image)
+            image = raw_image.convert("RGB")
+            image, trim_info = trim_image_margins(image)
+            was_trimmed = trim_info["trimmed"]
+            if was_trimmed:
+                logger.info(
+                    "余白をトリミングしました: %s — 残率 %.0f%%",
+                    file_path,
+                    trim_info["keep_ratio"] * 100,
+                )
 
         image_array = np.array(image, dtype=np.uint8)
         result = detect_faces_from_array(
@@ -405,7 +471,7 @@ class JobManager:
             state.skipped += 1
             return
 
-        if trim_info["trimmed"]:
+        if was_trimmed:
             # トリミングで画素が変わっているため再エンコードが必要
             save_spread_image(
                 image, file_path, "",
@@ -421,12 +487,89 @@ class JobManager:
             )
         state.extracted += 1
 
-    def _process_spread_file(self, state: JobState, file_path: Path) -> None:
+    def _check_duplicate(self, state: JobState, file_path: Path) -> DedupeOutcome:
+        """重複判定を行い、判定結果と下流へ渡す情報を返す。
+
+        画像を開いて余白をトリミングし、その結果からハッシュを求める。トリミングを
+        挟むのは判定精度のためである。余白が面積の大半を占める素材では、元画像の
+        ままだとハッシュが余白に支配され、本物の重複と別画像を分ける境界が消える。
+
+        ``state.trim_margins`` が有効なら、ここでトリミングした画像をそのまま下流へ
+        渡す。無効なら未トリミングの画像を渡す。いずれの場合も画像を開くのは 1 回で
+        済み、二度開きによる無駄が出ない。
+
+        ハッシュ計算に失敗した場合は重複判定を諦め、``(False, None)`` を返して通常
+        処理に進ませる。1 枚の失敗でジョブを止めないため。
+
+        Args:
+            state: 実行中のジョブ状態オブジェクト。
+            file_path: 判定対象の画像ファイルパス。
+
+        Returns:
+            :class:`DedupeOutcome`。重複の場合 ``image`` は None。
+        """
+        try:
+            raw_image = ImageOps.exif_transpose(Image.open(file_path))
+            original = raw_image.convert("RGB")
+            trimmed, trim_info = trim_image_margins(original)
+            image_hash = compute_dhash(trimmed)
+        except Exception as exc:
+            logger.error(
+                "重複判定用のハッシュ計算に失敗しました。判定をスキップします — %s: %s",
+                file_path,
+                exc,
+                exc_info=True,
+            )
+            return DedupeOutcome(is_duplicate=False, image=None, trimmed=False)
+
+        found = state.duplicate_index.find(image_hash)
+        if found is not None:
+            original_path, distance = found
+            state.duplicates += 1
+            try:
+                copy_to_duplicates(
+                    file_path,
+                    state.source_folder,
+                    state.dest_folder,
+                    original_path,
+                    distance,
+                )
+            except OSError as exc:
+                logger.error(
+                    "重複画像の退避に失敗しました: %s — %s",
+                    file_path,
+                    exc,
+                    exc_info=True,
+                )
+                state.errors += 1
+                state.error_files.append(str(file_path))
+            return DedupeOutcome(is_duplicate=True, image=None, trimmed=False)
+
+        state.duplicate_index.add(image_hash, file_path)
+        if state.trim_margins:
+            if trim_info["trimmed"]:
+                logger.info(
+                    "余白をトリミングしました: %s — 残率 %.0f%%",
+                    file_path,
+                    trim_info["keep_ratio"] * 100,
+                )
+            return DedupeOutcome(
+                is_duplicate=False, image=trimmed, trimmed=trim_info["trimmed"]
+            )
+        return DedupeOutcome(is_duplicate=False, image=original, trimmed=False)
+
+    def _process_spread_file(
+        self,
+        state: JobState,
+        file_path: Path,
+        preloaded: Image.Image | None = None,
+    ) -> None:
         """人物検出で見開き分割を行い、各画像に顔検出・コピーを適用する。
 
         Args:
             state: 実行中のジョブ状態オブジェクト。
             file_path: 処理対象の画像ファイルパス。
+            preloaded: 重複判定で読み込み済みの画像。あれば再利用する。
         """
 
         def _count_fn(arr: np.ndarray) -> int:
@@ -435,7 +578,10 @@ class JobManager:
             return count_persons(arr, confidence=state.yolo_confidence)
 
         spread_result = process_spread(
-            file_path, _count_fn, trim_margins=state.trim_margins
+            file_path,
+            _count_fn,
+            trim_margins=state.trim_margins,
+            preloaded_image=preloaded,
         )
 
         if spread_result["action"] == "split":

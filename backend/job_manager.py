@@ -118,6 +118,7 @@ class JobState:
             "skipped": self.skipped,
             "errors": self.errors,
             "split_count": self.split_count,
+            "duplicates": self.duplicates,
             "error_files": self.error_files,
             "current_file": self.current_file,
         }
@@ -418,9 +419,14 @@ class JobManager:
         Args:
             state: 実行中のジョブ状態オブジェクト。
             file_path: 処理対象の画像ファイルパス。
-            preloaded: 重複判定で読み込み済みの画像。あれば再利用する。
+            preloaded: 重複判定で読み込み済みの画像。``state.trim_margins`` が
+                True の場合のみ再利用する。False の場合は意図的に無視し、
+                ファイルを再読み込みする（理由は下記コメントを参照）。
             preloaded_trimmed: preloaded が実際にトリミングされているか。
         """
+        # この経路は preloaded を意図的に使わない。detect_faces（パス版）は EXIF 回転を
+        # 適用しないのに対し preloaded は適用済みで、流用すると重複除外の ON/OFF という
+        # 無関係な設定で顔検出結果が変わってしまう。約 13ms の再読み込みはその対価。
         if not state.trim_margins:
             result = detect_faces(
                 file_path, state.threshold,
@@ -498,8 +504,9 @@ class JobManager:
         渡す。無効なら未トリミングの画像を渡す。いずれの場合も画像を開くのは 1 回で
         済み、二度開きによる無駄が出ない。
 
-        ハッシュ計算に失敗した場合は重複判定を諦め、``(False, None)`` を返して通常
-        処理に進ませる。1 枚の失敗でジョブを止めないため。
+        ハッシュ計算に失敗した場合は重複判定を諦め、
+        ``DedupeOutcome(is_duplicate=False, image=None, trimmed=False)`` を返して
+        通常処理に進ませる。1 枚の失敗でジョブを止めないため。
 
         Args:
             state: 実行中のジョブ状態オブジェクト。
@@ -534,7 +541,7 @@ class JobManager:
                     original_path,
                     distance,
                 )
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 logger.error(
                     "重複画像の退避に失敗しました: %s — %s",
                     file_path,

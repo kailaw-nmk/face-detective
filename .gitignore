@@ -17,3 +17,6 @@ backend/logs/
 
 # YOLOv8 モデルファイル（自動ダウンロード）
 *.pt
+
+# クラッシュダンプ
+*.stackdump

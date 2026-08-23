@@ -34,6 +34,28 @@ def _patterned_image(seed: int, size: tuple[int, int] = (240, 320)) -> Image.Ima
     return Image.fromarray(np.dstack([arr, arr, arr]), mode="RGB")
 
 
+def _margined_image(
+    size: tuple[int, int] = (800, 600),
+    inner_size: tuple[int, int] = (400, 400),
+) -> Image.Image:
+    """白背景の中央にカラー矩形を置いた、余白のある RGB 画像を作る。
+
+    Args:
+        size: (width, height)。全体サイズ。
+        inner_size: (width, height)。中央に置くカラー矩形のサイズ。
+
+    Returns:
+        生成した RGB 画像。トリミングすると inner_size に収束するはず。
+    """
+    width, height = size
+    inner_w, inner_h = inner_size
+    arr = np.full((height, width, 3), 255, dtype=np.uint8)
+    top = (height - inner_h) // 2
+    left = (width - inner_w) // 2
+    arr[top : top + inner_h, left : left + inner_w] = (30, 60, 200)
+    return Image.fromarray(arr, mode="RGB")
+
+
 def _make_state(tmp_path: Path, *, dedupe: bool, seeds: list[int]) -> JobState:
     """入力画像を作り、対応する JobState を返す。
 
@@ -166,6 +188,38 @@ class TestCheckDuplicate:
         )
 
         assert outcome.trimmed is False
+
+    def test_reports_trimmed_true_when_margins_are_actually_trimmed(
+        self, tmp_path: Path
+    ) -> None:
+        """余白のある画像を trim_margins=True で判定すると trimmed が True になること。
+
+        誤って False が返ると _process_single_file が save_spread_image ではなく
+        copy_image を選び、トリミングされていない元ファイルをそのままコピーして
+        しまう（顔面積比のタグだけがトリミング後の値という不整合を生む）。
+        """
+        source = tmp_path / "source"
+        dest = tmp_path / "dest"
+        source.mkdir()
+        dest.mkdir()
+        original = _margined_image(size=(800, 600), inner_size=(400, 400))
+        original.save(source / "page_000.png")
+
+        state = JobState(
+            job_id="test-job",
+            source_folder=source,
+            dest_folder=dest,
+            threshold=1.0,
+            dedupe=True,
+            trim_margins=True,
+        )
+
+        outcome = JobManager()._check_duplicate(state, source / "page_000.png")
+
+        assert outcome.trimmed is True
+        assert outcome.image is not None
+        assert outcome.image.size[0] < original.size[0]
+        assert outcome.image.size[1] < original.size[1]
 
     def test_hash_failure_falls_through_to_normal_processing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

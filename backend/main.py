@@ -95,6 +95,8 @@ class StartJobRequest(BaseModel):
     threshold: float
     spread_split: bool = False
     trim_margins: bool = False
+    dedupe: bool = False
+    dedupe_max_distance: int = 0
     require_both_eyes: bool = False
     min_eye_ratio: float = 0.25
     min_face_score: float = 0.5
@@ -188,19 +190,23 @@ async def start_job(request: StartJobRequest) -> StartJobResponse:
         threshold=request.threshold,
         spread_split=request.spread_split,
         trim_margins=request.trim_margins,
+        dedupe=request.dedupe,
+        dedupe_max_distance=request.dedupe_max_distance,
         require_both_eyes=request.require_both_eyes,
         min_eye_ratio=request.min_eye_ratio,
         min_face_score=request.min_face_score,
         yolo_confidence=request.yolo_confidence,
     )
     logger.info(
-        "ジョブ登録: job_id=%s, src=%s, dest=%s, threshold=%.1f, spread_split=%s, trim_margins=%s",
+        "ジョブ登録: job_id=%s, src=%s, dest=%s, threshold=%.1f, spread_split=%s, "
+        "trim_margins=%s, dedupe=%s",
         job_id,
         request.source_folder,
         dest_folder,
         request.threshold,
         request.spread_split,
         request.trim_margins,
+        request.dedupe,
     )
     return StartJobResponse(job_id=job_id, dest_folder=dest_folder)
 
@@ -279,6 +285,8 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str) -> None:
         job_id=job_id,
         spread_split=pending.get("spread_split", False),
         trim_margins=pending.get("trim_margins", False),
+        dedupe=pending.get("dedupe", False),
+        dedupe_max_distance=pending.get("dedupe_max_distance", 0),
         require_both_eyes=pending.get("require_both_eyes", False),
         min_eye_ratio=pending.get("min_eye_ratio", 0.25),
         min_face_score=pending.get("min_face_score", 0.5),

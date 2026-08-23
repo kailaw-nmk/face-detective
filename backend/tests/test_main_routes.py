@@ -152,3 +152,42 @@ def test_start_defaults_trim_margins_to_false(
     assert resp.status_code == 200
     job_id = resp.json()["job_id"]
     assert job_manager._pending[job_id]["trim_margins"] is False
+
+
+@pytest.mark.parametrize("prefix", PREFIXES)
+def test_start_accepts_dedupe(client: TestClient, tmp_path, prefix: str) -> None:
+    """POST /api/start が dedupe 設定を受け取り pending に保持すること。"""
+    from main import job_manager
+
+    resp = client.post(
+        f"{prefix}/api/start",
+        json={
+            "source_folder": str(tmp_path),
+            "threshold": 5.0,
+            "dedupe": True,
+            "dedupe_max_distance": 4,
+        },
+    )
+
+    assert resp.status_code == 200
+    job_id = resp.json()["job_id"]
+    assert job_manager._pending[job_id]["dedupe"] is True
+    assert job_manager._pending[job_id]["dedupe_max_distance"] == 4
+
+
+@pytest.mark.parametrize("prefix", PREFIXES)
+def test_start_defaults_dedupe_to_disabled(
+    client: TestClient, tmp_path, prefix: str
+) -> None:
+    """dedupe を省略した場合は無効・距離 0 になること（後方互換）。"""
+    from main import job_manager
+
+    resp = client.post(
+        f"{prefix}/api/start",
+        json={"source_folder": str(tmp_path), "threshold": 5.0},
+    )
+
+    assert resp.status_code == 200
+    job_id = resp.json()["job_id"]
+    assert job_manager._pending[job_id]["dedupe"] is False
+    assert job_manager._pending[job_id]["dedupe_max_distance"] == 0

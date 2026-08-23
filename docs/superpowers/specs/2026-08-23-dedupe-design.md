@@ -138,15 +138,21 @@ B は、タイトル文字が画像の広い面積を覆うためハッシュ距
 ```python
 class DuplicateIndex:
     def __init__(self, max_distance: int = DEFAULT_MAX_DISTANCE) -> None: ...
-    def find(self, image_hash: np.ndarray) -> Path | None: ...
+    def find(self, image_hash: np.ndarray) -> tuple[Path, int] | None: ...
     def add(self, image_hash: np.ndarray, path: Path) -> None: ...
     def __len__(self) -> int: ...
 ```
 
 - 内部にハッシュを 2 次元 bool 配列（shape: `(n, 256)`）として積み、`find()` は
-  `np.count_nonzero(self._hashes != image_hash, axis=1)` で全件との距離を一度に求める
-- 距離が `max_distance` 以下のもののうち **最小のもの**を返す。同点なら先に登録されたほう
+  `np.count_nonzero(stack != image_hash, axis=1)` で全件との距離を一度に求める
+- 距離が `max_distance` 以下のもののうち **最小のもの**の (パス, 距離) を返す。
+  同点なら先に登録されたほう（`np.argmin` は最初の最小値を返す）
 - 該当がなければ `None`
+- 距離も返すのは、退避時のログに「どのファイルの重複で、距離いくつだったか」を
+  残すためである
+
+配列は容量を倍々に伸ばして再利用する（追加のたびに積み直さない）。走査枚数が数千に
+なると、毎回積み直す実装は O(n²) のメモリコピーになるため。
 - `max_distance` が 0 の場合も同じ経路を通す。分岐を増やさないため
 - 3,000 枚でも 256bit の比較は numpy で一瞬であり、線形探索で足りる
 
@@ -181,6 +187,15 @@ class DuplicateIndex:
 ```
 
 `state.dedupe` が False のときは手順 1〜6 を丸ごと飛ばし、従来どおりの経路を通る。
+
+判定関数は「重複か」「下流へ渡す画像」に加えて **「その画像が実際にトリミングされたか」**
+も返す。通常経路はこの値で「再エンコードして保存するか、バイトコピーで無劣化のまま保存するか」
+を決めているため、画像だけを渡すとこの判断ができなくなる。
+
+ただし `trim_margins` が False のときの通常経路（`detect_faces(file_path)` を使う早期分岐）
+では、読み込み済み画像を**あえて使わない**。`detect_faces` は EXIF 回転を適用しないのに対し
+判定時に読み込んだ画像は適用済みであり、流用すると**重複除外の ON/OFF という無関係な設定で
+顔検出結果が変わってしまう**。この経路だけは再読み込み（約 13ms）を許容する。
 
 - `JobState` に `dedupe: bool`、`dedupe_max_distance: int`、`duplicates: int` を追加
 - `DuplicateIndex` は `JobState` が保持する（ジョブごとに独立）
@@ -254,10 +269,10 @@ WebSocket のメッセージ型は `progress` / `complete` / `error` の 3 種�
 | ハッシュ長 | 任意の画像 | 要素数が 256 |
 | グレースケール入力 | mode="L" の画像 | 例外なく処理でき、RGB 版と同じ距離 |
 | 空のインデックス | `find()` | `None` |
-| 閾値 0 での検出 | 同一画像を 2 枚登録 | 2 枚目で 1 枚目のパスが返る |
+| 閾値 0 での検出 | 同一画像を 2 枚登録 | 2 枚目で (1 枚目のパス, 0) が返る |
 | 閾値 0 で非検出 | 距離 2 の 2 枚 | `None` |
-| 閾値を上げた検出 | `max_distance=4` で距離 2 の 2 枚 | 1 枚目のパスが返る |
-| 最も近いものを返す | 距離 1 と 3 の 2 件を登録 | 距離 1 のパスが返る |
+| 閾値を上げた検出 | `max_distance=4` で距離 2 の 2 枚 | (1 枚目のパス, 2) が返る |
+| 最も近いものを返す | 距離 1 と 3 の 2 件を登録 | 距離 1 のほうのパスと距離が返る |
 | 閾値の丸め | `max_distance=999` | `MAX_ALLOWED_DISTANCE` に丸められ警告が出る |
 
 ### `backend/tests/test_job_manager_dedupe.py`（新規）

@@ -54,8 +54,14 @@ function App() {
     threshold: number,
     spreadSplit: boolean,
     trimMargins: boolean,
+    dedupe: boolean,
     requireBothEyes: boolean,
-    advanced: { minEyeRatio: number; minFaceScore: number; yoloConfidence: number },
+    advanced: {
+      minEyeRatio: number
+      minFaceScore: number
+      yoloConfidence: number
+      dedupeMaxDistance: number
+    },
   ) => {
     setStopError(null)
     setProgress(null)
@@ -70,6 +76,8 @@ function App() {
           threshold,
           spread_split: spreadSplit,
           trim_margins: trimMargins,
+          dedupe,
+          dedupe_max_distance: advanced.dedupeMaxDistance,
           require_both_eyes: requireBothEyes,
           min_eye_ratio: advanced.minEyeRatio,
           min_face_score: advanced.minFaceScore,

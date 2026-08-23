@@ -545,3 +545,38 @@ class TestProcessSpreadTrimMargins:
 
         assert result["action"] == "split"
         assert [img.size for img in result["images"]] == [(300, 300), (300, 300)]
+
+    def test_preloaded_image_is_used_instead_of_reading_file(
+        self, tmp_path: Path
+    ) -> None:
+        """preloaded_image を渡すとファイルを読まずにその画像が使われること。
+
+        ファイルには 800x600 の白画像を書き、渡す画像は 400x400 の別物にする。
+        戻り値が 400x400 なら、ファイルではなく渡した画像が使われている。
+        """
+        image_path = tmp_path / "unused.png"
+        Image.new("RGB", (800, 600), color=(255, 255, 255)).save(image_path)
+
+        preloaded = Image.new("RGB", (400, 400), color=(120, 60, 60))
+
+        result = process_spread(
+            image_path, _make_count_persons_fn(1), preloaded_image=preloaded
+        )
+
+        assert result["action"] == "kept"
+        assert result["images"][0].size == (400, 400)
+
+    def test_preloaded_image_works_with_missing_file(self, tmp_path: Path) -> None:
+        """preloaded_image があればファイルが存在しなくても処理できること。
+
+        ファイルを開く経路を本当に通っていないことの確認になる。
+        """
+        preloaded = Image.new("RGB", (400, 400), color=(120, 60, 60))
+
+        result = process_spread(
+            tmp_path / "does-not-exist.png",
+            _make_count_persons_fn(1),
+            preloaded_image=preloaded,
+        )
+
+        assert result["images"][0].size == (400, 400)

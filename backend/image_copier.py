@@ -12,6 +12,9 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
+# 重複と判定された画像の退避先フォルダ名（保存先ルートの直下に作る）
+DUPLICATES_DIR_NAME = "_duplicates"
+
 
 def generate_dest_folder(source_folder: Path) -> Path:
     """入力フォルダパスから保存先フォルダパスを自動生成する。
@@ -148,4 +151,59 @@ def save_spread_image(
         image.save(dest_path)
 
     logger.info("分割画像を保存しました: %s", dest_path)
+    return dest_path
+
+
+def copy_to_duplicates(
+    src: Path,
+    source_root: Path,
+    dest_root: Path,
+    original: Path,
+    distance: int,
+) -> Path:
+    """重複と判定された画像を保存先の ``_duplicates`` フォルダへ退避する。
+
+    削除ではなくコピーにしているのは、誤判定を後から目視で拾い戻せるようにする
+    ためである。入力フォルダには一切書き込まない。
+
+    Args:
+        src: 重複と判定された画像のパス。
+        source_root: 走査対象のルートフォルダ。
+        dest_root: 保存先ルートフォルダ。この直下に ``_duplicates`` を作る。
+        original: 重複元（最初に見つかったほう）のパス。ログ出力にのみ使う。
+        distance: ハミング距離。ログ出力にのみ使う。
+
+    Returns:
+        実際に退避されたファイルの完全パス。
+
+    Raises:
+        OSError: ファイルコピーに失敗した場合。
+    """
+    relative = src.relative_to(source_root)
+    dest_dir = dest_root / DUPLICATES_DIR_NAME / relative.parent
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    dest_path = dest_dir / src.name
+    if dest_path.exists():
+        counter = 1
+        while True:
+            candidate = dest_dir / f"{src.stem}_{counter:03d}{src.suffix}"
+            if not candidate.exists():
+                dest_path = candidate
+                break
+            counter += 1
+        logger.debug(
+            "退避先でファイル名が重複したためリネーム: %s → %s",
+            src.name,
+            dest_path.name,
+        )
+
+    shutil.copy2(str(src), str(dest_path))
+    logger.info(
+        "重複画像を退避しました: %s → %s (%s の重複, 距離 %d)",
+        src,
+        dest_path,
+        original.name,
+        distance,
+    )
     return dest_path

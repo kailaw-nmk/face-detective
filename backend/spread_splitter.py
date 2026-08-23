@@ -336,12 +336,15 @@ def process_spread(
     image_path: Path,
     count_persons_fn: Callable[[np.ndarray], int],
     trim_margins: bool = False,
+    preloaded_image: Image.Image | None = None,
 ) -> SpreadResult:
     """見開き画像を処理し、黒マスク除去・ストライプ除去・人物検出・分割を行う。
 
     処理フロー:
-        1. EXIF 情報を考慮して画像を開き、RGB に変換する
-        2. ``trim_margins`` が有効なら ``trim_image_margins()`` で余白を除去する
+        1. ``preloaded_image`` があればそれを使い、なければ EXIF 情報を考慮して
+           画像を開き RGB に変換する
+        2. ``preloaded_image`` が無く ``trim_margins`` が有効なら
+           ``trim_image_margins()`` で余白を除去する
         3. ``detect_side_masks()`` で左右の黒マスク（縦の黒帯）を検出し、
            ``crop_side_masks()`` でトリミングする（分割の有無に関わらず常に適用）
         4. ``detect_center_stripe()`` で中央ストライプを検出する
@@ -358,6 +361,10 @@ def process_spread(
             ``(image_array) -> int`` であり、検出された人物数を返す。
         trim_margins: 白／黒の余白トリミングを有効にするかどうか。有効な場合、
             読み込み直後と分割後の 2 箇所で ``trim_image_margins()`` を適用する。
+        preloaded_image: 手順 1〜2 を通過済みの画像。渡された場合はファイルを開かず
+            これを使い、手順 3 から始める。重複判定のために既に開いてトリミングした
+            画像を再利用し、二度開きを避けるためのもの。``trim_margins`` が False の
+            ときは手順 2 が何もしないため、未トリミングの画像を渡してよい。
 
     Returns:
         :class:`SpreadResult` 辞書:
@@ -367,21 +374,28 @@ def process_spread(
             - images (list[Image.Image]): 結果画像リスト（呼び出し元が管理）
             - suffixes (list[str]): [""] または ["_L", "_R"]
     """
-    # 画像を開いて EXIF 回転を適用し RGB に変換する
-    raw_image = Image.open(image_path)
-    raw_image = ImageOps.exif_transpose(raw_image)
-    original = raw_image.convert("RGB")
+    if preloaded_image is not None:
+        # 呼び出し側が手順 1〜2 を済ませている（重複判定で開いた画像の再利用）
+        original = preloaded_image
+        logger.debug(
+            "事前読み込み画像を使用します: %s (%dx%d)", image_path, *original.size
+        )
+    else:
+        # 画像を開いて EXIF 回転を適用し RGB に変換する
+        raw_image = Image.open(image_path)
+        raw_image = ImageOps.exif_transpose(raw_image)
+        original = raw_image.convert("RGB")
 
-    if trim_margins:
-        original, trim_info = trim_image_margins(original)
-        if trim_info["trimmed"]:
-            logger.info(
-                "読み込み時に余白をトリミングしました: %s — 残率 %.0f%%",
-                image_path,
-                trim_info["keep_ratio"] * 100,
-            )
+        if trim_margins:
+            original, trim_info = trim_image_margins(original)
+            if trim_info["trimmed"]:
+                logger.info(
+                    "読み込み時に余白をトリミングしました: %s — 残率 %.0f%%",
+                    image_path,
+                    trim_info["keep_ratio"] * 100,
+                )
 
-    logger.debug("画像を読み込みました: %s (%dx%d)", image_path, *original.size)
+        logger.debug("画像を読み込みました: %s (%dx%d)", image_path, *original.size)
 
     # 左右の黒マスクを検出してトリミングする（分割の有無に関わらず常に適用）
     try:

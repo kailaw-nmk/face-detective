@@ -22,6 +22,7 @@ function ResultSummary({ result, onReset }: ResultSummaryProps) {
   const skipped = result?.skipped ?? 0
   const errors = result?.errors ?? 0
   const splitCount = result?.split_count ?? 0
+  const duplicates = result?.duplicates ?? 0
   const errorFiles = result?.error_files ?? []
 
   return (
@@ -53,6 +54,15 @@ function ResultSummary({ result, onReset }: ResultSummaryProps) {
             unit="件"
             color="text-purple-600"
             bgColor="bg-purple-50"
+          />
+        )}
+        {duplicates > 0 && (
+          <ResultCard
+            label="重複で除外"
+            value={duplicates}
+            unit="件"
+            color="text-orange-600"
+            bgColor="bg-orange-50"
           />
         )}
         <ResultCard

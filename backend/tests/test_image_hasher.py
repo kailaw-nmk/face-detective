@@ -18,6 +18,7 @@ from image_hasher import (
     HASH_BITS,
     MAX_ALLOWED_DISTANCE,
     DuplicateIndex,
+    _INITIAL_CAPACITY,
     compute_dhash,
     hamming_distance,
 )
@@ -210,15 +211,49 @@ class TestDuplicateIndex:
         assert DuplicateIndex().max_distance == DEFAULT_MAX_DISTANCE
 
     def test_grows_beyond_initial_capacity(self) -> None:
-        """初期容量を超えて追加しても正しく検出できること。
+        """初期容量を超えて追加しても、伸長をまたいで正しく検出できること。
 
-        内部配列を倍々に伸ばす実装のため、伸長をまたいだ検索を確認する。
+        内部配列は容量を倍々に伸ばして再利用する。ここでは伸長分岐を確実に通すため、
+        画像を経由せず合成ハッシュを直接登録する（画像を数百枚作ると遅いため）。
         """
         index = DuplicateIndex()
-        hashes = [compute_dhash(_gradient_image(i)) for i in range(1, 40)]
-        for i, h in enumerate(hashes):
-            index.add(h, Path(f"{i}.jpg"))
+        count = _INITIAL_CAPACITY + 5
+        bits_needed = count.bit_length()  # i の 2 進表現をそのままビット列に落とし込む
 
-        assert len(index) == 39
+        hashes = []
+        for i in range(count):
+            image_hash = np.zeros(HASH_BITS, dtype=bool)
+            for bit in range(bits_needed):
+                if (i >> bit) & 1:
+                    image_hash[bit] = True
+            hashes.append(image_hash)
+            index.add(image_hash, Path(f"{i}.jpg"))
+
+        # i の 2 進表現をそのまま使うため、i が異なれば必ずハッシュも異なる。
+        # 衝突（距離 0 のペア）が生まれていないことを念のため確認する
+        unique_count = len({tuple(h.tolist()) for h in hashes})
+        assert unique_count == count
+
+        assert len(index) == count
+        # 伸長前に登録したものと、伸長後に登録したものの両方が引ける
         assert index.find(hashes[0]) == (Path("0.jpg"), 0)
-        assert index.find(hashes[-1]) == (Path("38.jpg"), 0)
+        assert index.find(hashes[_INITIAL_CAPACITY]) == (
+            Path(f"{_INITIAL_CAPACITY}.jpg"),
+            0,
+        )
+        assert index.find(hashes[-1]) == (Path(f"{count - 1}.jpg"), 0)
+
+    def test_returns_first_registered_on_tie(self) -> None:
+        """距離が同点の場合、先に登録されたほうが返ること。"""
+        index = DuplicateIndex(max_distance=8)
+        base = compute_dhash(_gradient_image(1))
+
+        first = base.copy()
+        first[0] = not first[0]
+        second = base.copy()
+        second[1] = not second[1]
+
+        index.add(first, Path("first.jpg"))
+        index.add(second, Path("second.jpg"))
+
+        assert index.find(base) == (Path("first.jpg"), 1)

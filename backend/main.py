@@ -458,6 +458,42 @@ async def redirect_bare_prefix() -> RedirectResponse:
 # また "/" のマウントは全パスを飲み込むので、"/face-detect" を先に登録する。
 _DIST_DIR = Path(__file__).parent.parent / "frontend" / "dist"
 
+
+def check_dist_base_path(dist_dir: Path) -> str | None:
+    """配信する dist が正しい base パスでビルドされているか調べる。
+
+    素の ``npm run build`` で作られた dist は ``/assets/...`` を参照するため、
+    ``http://localhost:52840/`` では動くのに Tailscale Serve の
+    ``/face-detect/`` 経由だけ真っ白になる。localhost だけ見ていると気付けない
+    ので、起動時に検知して警告する。
+
+    未ビルド（index.html が無い）場合は None を返す。そちらは別の警告が
+    担当するため、ここで二重に警告しない。
+
+    Args:
+        dist_dir: 検査する frontend/dist ディレクトリ。
+
+    Returns:
+        問題があれば警告文言。問題なければ None。
+    """
+    index_path = dist_dir / "index.html"
+    try:
+        html = index_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    if f"{_PREFIX}/" in html:
+        return None
+
+    return (
+        f"frontend/dist が {_PREFIX}/ プレフィックス無しでビルドされています。"
+        f"http://localhost:52840/ では動きますが、Tailscale Serve 経由の "
+        f"https://<host>:8443{_PREFIX}/ では画面が真っ白になります。"
+        "frontend フォルダで npm run build を実行し直してください"
+        "（build スクリプトが --base を付けます）。"
+    )
+
+
 if _DIST_DIR.is_dir():
     app.mount(
         _PREFIX,
@@ -470,6 +506,10 @@ if _DIST_DIR.is_dir():
         name="frontend",
     )
     logger.info("ビルド済みフロントエンドを配信します: %s", _DIST_DIR)
+
+    _dist_warning = check_dist_base_path(_DIST_DIR)
+    if _dist_warning:
+        logger.warning(_dist_warning)
 else:
     logger.warning(
         "frontend/dist が見つかりません (UI は 404 になります): %s", _DIST_DIR

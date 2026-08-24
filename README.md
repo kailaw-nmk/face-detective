@@ -131,21 +131,37 @@ Claude Codeが自動的にタスク内容に応じて適切なエージェント
 - `Context7` の API キーは提供ファイル内のものをそのまま使用しています。必要に応じて差し替えてください。
 - `.claude/settings.json` のパーミッション設定は開発効率を優先しています。本番環境向けにはより制限的にしてください。
 
-## OtaGenX ポータル配下での配信
+## Tailscale 経由でのアクセス
 
-OtaGenX の Tailscale Serve (`https://i3-2060.tail673a53.ts.net:8443/face-detect/`) から
-アクセスする場合は、プレフィックス付きでフロントをビルドする。
+```
+https://i3-2060.tail673a53.ts.net:8443/face-detect/
+```
+
+OtaGenX の Tailscale Serve が `:8443` の `/face-detect` を
+`http://127.0.0.1:52840` にパスマウントしている（`tailscale serve status` で確認できる）。
+backend が `frontend/dist` を配信するため、`http://localhost:52840/` と
+上記 URL の両方から同じ画面が開く。
+
+### ビルド
 
 ```powershell
 cd frontend
-$env:VITE_BASE_PATH="/face-detect/"
 npm run build
 ```
 
-ビルド後は backend (`:52840`) が `frontend/dist` を配信するため、
-`http://localhost:52840/` と `https://i3-2060.tail673a53.ts.net:8443/face-detect/` の
-両方から同じ画面が開く。**フロントを変更したら再ビルドが必要**（忘れると古い画面が出続ける）。
+`build` スクリプトは `--base=/face-detect/` を渡すので、**素で実行して問題ない**。
 
-開発時の `npm run dev` (`:52841`) は `VITE_BASE_PATH` 未設定のため従来どおり動作する。
+このプレフィックスが無い dist は `/assets/...` を参照するため、
+`http://localhost:52840/` では動くのに Tailscale 経由だけ画面が真っ白になる。
+localhost だけ見ていると気付けないので、既定を安全側に倒してある。
+取り違えても気付けるよう、backend は起動時に `frontend/dist/index.html` を検査し、
+プレフィックスが無ければ警告をログに出す。
+
+`start.bat` はサーバー起動前に必ずこのビルドを実行する。ビルドが失敗した場合は
+古い dist を配信しないよう、サーバーを起動せずに終了する。
+
+**フロントを変更したら再ビルドが必要**（`start.bat` を再実行するのが確実）。
+`npm run dev` (`:52841`) はホットリロードで動くが、Tailscale 経由が配信するのは
+dev サーバーではなく `frontend/dist` である点に注意。
 
 `frontend/dist` は `.gitignore` によりコミット対象外のため、デプロイ先で再ビルドが必要。

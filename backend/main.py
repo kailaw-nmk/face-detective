@@ -5,7 +5,8 @@ REST API エンドポイントと WebSocket によるリアルタイム進捗配
 
 import logging
 import os
-from logging.handlers import RotatingFileHandler
+import time
+from datetime import date, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, FastAPI, WebSocket, WebSocketDisconnect
@@ -24,16 +25,103 @@ from job_manager import JobManager
 _LOG_DIR = Path(__file__).parent / "logs"
 os.makedirs(_LOG_DIR, exist_ok=True)
 
+_LOG_RETENTION_DAYS = 14        # これより古い日次ログは起動時に削除する
+_LOG_FILE_PREFIX = "app-"       # 日次ログのファイル名は app-YYYY-MM-DD.log
+
+
+class DailyFileHandler(logging.FileHandler):
+    """日付ごとのファイルに追記し、日付が変わったら開き直すハンドラ。
+
+    ファイル名に最初から日付を含めるため、ローテーション時のリネームが発生しない。
+    標準の ``RotatingFileHandler`` や ``TimedRotatingFileHandler`` は
+    ``os.rename`` でローテーションするが、uvicorn を ``--reload`` で動かすと
+    親プロセスと spawn された子プロセスの両方が同じログファイルを開くため、
+    Windows では rename が必ず ``WinError 32``（別プロセスが使用中）で失敗する。
+    失敗すると ``emit()`` はそのログ行を捨てるので、**ファイルログが丸ごと
+    失われる**（2026-08-23 に実際に発生し、16:51 以降の記録が消えた）。
+
+    リネームを行わないこの方式なら、何プロセスが書いていても失敗しない。
+    追記モードの書き込みは行単位なら競合しても壊れない。
+    """
+
+    def __init__(self, log_dir: Path, encoding: str = "utf-8") -> None:
+        """ハンドラを初期化し、当日のログファイルを開く。
+
+        Args:
+            log_dir: ログファイルを置くディレクトリ。
+            encoding: ファイルのエンコーディング。
+        """
+        self._log_dir = log_dir
+        self._current_date = self._today()
+        super().__init__(
+            self._path_for(self._current_date), encoding=encoding, delay=False
+        )
+
+    @staticmethod
+    def _today() -> date:
+        """現在のローカル日付を返す。
+
+        Returns:
+            ローカルタイムゾーンでの今日の日付。
+        """
+        return datetime.now().date()
+
+    def _path_for(self, day: date) -> Path:
+        """指定日のログファイルパスを返す。
+
+        Args:
+            day: 対象の日付。
+
+        Returns:
+            ``app-YYYY-MM-DD.log`` の完全パス。
+        """
+        return self._log_dir / f"{_LOG_FILE_PREFIX}{day.isoformat()}.log"
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """ログを出力する。日付が変わっていれば出力先を切り替える。
+
+        Args:
+            record: 出力するログレコード。
+        """
+        today = self._today()
+        if today != self._current_date:
+            self._current_date = today
+            self.close()
+            self.baseFilename = str(self._path_for(today))
+            self.stream = self._open()
+        super().emit(record)
+
+
+def _purge_old_logs(log_dir: Path, retention_days: int) -> None:
+    """保持期間を過ぎた日次ログを削除する。
+
+    この関数の失敗はログ出力そのものを妨げてはならないため、例外は握らず
+    個別に捕捉して次のファイルへ進む。削除できなくてもアプリは動作する。
+
+    旧方式の ``app.log`` / ``app.log.N`` は命名規則が異なるため対象外で、
+    そのまま残る（手動で削除できる）。
+
+    Args:
+        log_dir: ログファイルを置くディレクトリ。
+        retention_days: 保持する日数。
+    """
+    cutoff = time.time() - retention_days * 24 * 60 * 60
+    for path in log_dir.glob(f"{_LOG_FILE_PREFIX}*.log"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+        except OSError:
+            # 他プロセスが開いている等で消せなくても処理を続ける
+            continue
+
+
+_purge_old_logs(_LOG_DIR, _LOG_RETENTION_DAYS)
+
 _log_formatter = logging.Formatter(
     "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
 )
 
-_file_handler = RotatingFileHandler(
-    _LOG_DIR / "app.log",
-    maxBytes=10 * 1024 * 1024,  # 10 MB
-    backupCount=5,
-    encoding="utf-8",
-)
+_file_handler = DailyFileHandler(_LOG_DIR)
 _file_handler.setFormatter(_log_formatter)
 
 _console_handler = logging.StreamHandler()

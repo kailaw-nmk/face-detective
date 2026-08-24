@@ -23,6 +23,7 @@ function ResultSummary({ result, onReset }: ResultSummaryProps) {
   const errors = result?.errors ?? 0
   const splitCount = result?.split_count ?? 0
   const duplicates = result?.duplicates ?? 0
+  const alreadyProcessed = result?.already_processed ?? 0
   const errorFiles = result?.error_files ?? []
 
   return (
@@ -63,6 +64,15 @@ function ResultSummary({ result, onReset }: ResultSummaryProps) {
             unit="件"
             color="text-orange-600"
             bgColor="bg-orange-50"
+          />
+        )}
+        {alreadyProcessed > 0 && (
+          <ResultCard
+            label="処理済みで除外"
+            value={alreadyProcessed}
+            unit="件"
+            color="text-blue-600"
+            bgColor="bg-blue-50"
           />
         )}
         <ResultCard

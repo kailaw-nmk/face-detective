@@ -56,6 +56,7 @@ function App() {
     trimMargins: boolean,
     dedupe: boolean,
     requireBothEyes: boolean,
+    skipProcessed: boolean,
     advanced: {
       minEyeRatio: number
       minFaceScore: number
@@ -82,6 +83,7 @@ function App() {
           min_eye_ratio: advanced.minEyeRatio,
           min_face_score: advanced.minFaceScore,
           yolo_confidence: advanced.yoloConfidence,
+          skip_processed: skipProcessed,
         }),
       })
 

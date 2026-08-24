@@ -24,6 +24,7 @@ from image_copier import (
 from image_hasher import DuplicateIndex, compute_dhash
 from margin_trimmer import trim_image_margins
 from person_detector import count_persons
+from processed_index import ProcessedIndex, compute_settings_hash
 from spread_splitter import process_spread
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,7 @@ class JobState:
         yolo_confidence: float = 0.2,
         dedupe: bool = False,
         dedupe_max_distance: int = 0,
+        skip_processed: bool = False,
     ) -> None:
         """ジョブ状態を初期化する。
 
@@ -75,6 +77,7 @@ class JobState:
             yolo_confidence: YOLO 人物検出の信頼度閾値。
             dedupe: 重複画像の除外を有効にするかどうか。
             dedupe_max_distance: 重複とみなす最大ハミング距離（256bit 中）。
+            skip_processed: 過去のジョブで処理済みの画像をスキップするかどうか。
         """
         self.job_id = job_id
         self.source_folder = source_folder
@@ -88,6 +91,7 @@ class JobState:
         self.yolo_confidence = yolo_confidence
         self.dedupe = dedupe
         self.dedupe_max_distance = dedupe_max_distance
+        self.skip_processed = skip_processed
         # ジョブごとに独立したインデックスを持つ（過去のジョブとは照合しない）
         self.duplicate_index = DuplicateIndex(max_distance=dedupe_max_distance)
 
@@ -99,6 +103,7 @@ class JobState:
         self.errors: int = 0
         self.split_count: int = 0
         self.duplicates: int = 0
+        self.already_processed: int = 0
         self.error_files: list[str] = []
         self.current_file: str = ""
         self.cancelled: bool = False
@@ -119,6 +124,7 @@ class JobState:
             "errors": self.errors,
             "split_count": self.split_count,
             "duplicates": self.duplicates,
+            "already_processed": self.already_processed,
             "error_files": self.error_files,
             "current_file": self.current_file,
         }
@@ -144,6 +150,7 @@ class JobManager:
         yolo_confidence: float = 0.2,
         dedupe: bool = False,
         dedupe_max_distance: int = 0,
+        skip_processed: bool = False,
     ) -> tuple[str, str]:
         """ジョブをペンディング状態で登録し、(job_id, dest_folder) を返す。
 
@@ -158,6 +165,7 @@ class JobManager:
             yolo_confidence: YOLO 人物検出の信頼度閾値。
             dedupe: 重複画像の除外を有効にするかどうか。
             dedupe_max_distance: 重複とみなす最大ハミング距離（256bit 中）。
+            skip_processed: 過去のジョブで処理済みの画像をスキップするかどうか。
 
         Returns:
             登録されたジョブ ID 文字列と、自動生成された保存先フォルダパス文字列のタプル。
@@ -176,6 +184,7 @@ class JobManager:
             "yolo_confidence": yolo_confidence,
             "dedupe": dedupe,
             "dedupe_max_distance": dedupe_max_distance,
+            "skip_processed": skip_processed,
         }
         logger.info("ジョブを登録しました (pending): job_id=%s", job_id)
         return job_id, dest_folder
@@ -195,6 +204,7 @@ class JobManager:
         yolo_confidence: float = 0.2,
         dedupe: bool = False,
         dedupe_max_distance: int = 0,
+        skip_processed: bool = False,
     ) -> str:
         """新規ジョブを作成して非同期タスクとして起動する。
 
@@ -212,6 +222,7 @@ class JobManager:
             yolo_confidence: YOLO 人物検出の信頼度閾値。
             dedupe: 重複画像の除外を有効にするかどうか。
             dedupe_max_distance: 重複とみなす最大ハミング距離（256bit 中）。
+            skip_processed: 過去のジョブで処理済みの画像をスキップするかどうか。
 
         Returns:
             ジョブ ID 文字列。
@@ -231,11 +242,13 @@ class JobManager:
             yolo_confidence=yolo_confidence,
             dedupe=dedupe,
             dedupe_max_distance=dedupe_max_distance,
+            skip_processed=skip_processed,
         )
         self._jobs[job_id] = state
         logger.info(
-            "ジョブを開始します: job_id=%s, spread_split=%s, trim_margins=%s, dedupe=%s",
-            job_id, spread_split, trim_margins, dedupe,
+            "ジョブを開始します: job_id=%s, spread_split=%s, trim_margins=%s, "
+            "dedupe=%s, skip_processed=%s",
+            job_id, spread_split, trim_margins, dedupe, skip_processed,
         )
 
         asyncio.create_task(self._run_job(state, send_message))
@@ -302,10 +315,115 @@ class JobManager:
             await send_message(error_msg)
             return
 
+        index = self._open_processed_index(state)
+
+        if state.skip_processed:
+            remaining = [
+                path for path in image_files if not index.is_processed(path)
+            ]
+            state.already_processed = len(image_files) - len(remaining)
+            image_files = remaining
+            logger.info(
+                "ジョブ %s: 処理済みのため %d 件を除外しました",
+                state.job_id,
+                state.already_processed,
+            )
+
         state.total = len(image_files)
         logger.info(
             "ジョブ %s: 対象ファイル数 = %d", state.job_id, state.total
         )
+
+        try:
+            await self._process_files(state, image_files, index, send_message)
+        finally:
+            index.close()
+
+        if state.status == "running":
+            state.status = "complete"
+
+        complete_msg = json.dumps(
+            {
+                "type": "complete",
+                "total": state.total,
+                "extracted": state.extracted,
+                "skipped": state.skipped,
+                "errors": state.errors,
+                "split_count": state.split_count,
+                "duplicates": state.duplicates,
+                "already_processed": state.already_processed,
+                "error_files": state.error_files,
+            },
+            ensure_ascii=False,
+        )
+        try:
+            await send_message(complete_msg)
+        except Exception as ws_exc:
+            logger.warning(
+                "完了メッセージの送信に失敗しました: %s", ws_exc
+            )
+
+        logger.info(
+            "ジョブ完了: job_id=%s, 合計=%d, 抽出=%d, スキップ=%d, 分割=%d, "
+            "重複=%d, 処理済み除外=%d, エラー=%d",
+            state.job_id,
+            state.total,
+            state.extracted,
+            state.skipped,
+            state.split_count,
+            state.duplicates,
+            state.already_processed,
+            state.errors,
+        )
+
+    def _open_processed_index(self, state: JobState) -> ProcessedIndex:
+        """ジョブの設定に対応する処理済みインデックスを開く。
+
+        ``skip_processed`` の値に関わらず開く。記録の書き込みをフラグに
+        依存させないことで、「今回は全部やり直すが次回からはスキップしたい」
+        という使い方が成立する。
+
+        Args:
+            state: 実行中のジョブ状態オブジェクト。
+
+        Returns:
+            設定ハッシュに対応する :class:`ProcessedIndex`。
+        """
+        settings_hash = compute_settings_hash(
+            {
+                "threshold": state.threshold,
+                "spread_split": state.spread_split,
+                "trim_margins": state.trim_margins,
+                "require_both_eyes": state.require_both_eyes,
+                "min_eye_ratio": state.min_eye_ratio,
+                "min_face_score": state.min_face_score,
+                "yolo_confidence": state.yolo_confidence,
+                "dedupe": state.dedupe,
+                "dedupe_max_distance": state.dedupe_max_distance,
+            }
+        )
+        return ProcessedIndex(state.source_folder, state.dest_folder, settings_hash)
+
+    async def _process_files(
+        self,
+        state: JobState,
+        image_files: list[Path],
+        index: ProcessedIndex,
+        send_message: Any,
+    ) -> None:
+        """スキャン済みファイルを 1 件ずつ処理し、進捗を配信する。
+
+        個別ファイルのエラーはログに記録して次へ進む。処理に成功した
+        ファイルだけを処理済みとして記録するため、失敗したファイルは
+        次回のジョブで再試行される。
+
+        Args:
+            state: 実行中のジョブ状態オブジェクト。
+            image_files: 処理対象の画像ファイルパスのリスト。
+            index: 処理済み記録のインデックス。
+            send_message: WebSocket へ JSON メッセージを送るコルーチン関数。
+        """
+        import json
 
         for file_path in image_files:
             if state.cancelled:
@@ -327,6 +445,8 @@ class JobManager:
                         self._process_single_file(
                             state, file_path, outcome.image, outcome.trimmed
                         )
+
+                index.mark(file_path)
 
             except Exception as exc:
                 logger.error(
@@ -352,6 +472,7 @@ class JobManager:
                     "errors": state.errors,
                     "split_count": state.split_count,
                     "duplicates": state.duplicates,
+                    "already_processed": state.already_processed,
                 },
                 ensure_ascii=False,
             )
@@ -363,41 +484,6 @@ class JobManager:
                 )
 
             await asyncio.sleep(0)
-
-        if state.status == "running":
-            state.status = "complete"
-
-        complete_msg = json.dumps(
-            {
-                "type": "complete",
-                "total": state.total,
-                "extracted": state.extracted,
-                "skipped": state.skipped,
-                "errors": state.errors,
-                "split_count": state.split_count,
-                "duplicates": state.duplicates,
-                "error_files": state.error_files,
-            },
-            ensure_ascii=False,
-        )
-        try:
-            await send_message(complete_msg)
-        except Exception as ws_exc:
-            logger.warning(
-                "完了メッセージの送信に失敗しました: %s", ws_exc
-            )
-
-        logger.info(
-            "ジョブ完了: job_id=%s, 合計=%d, 抽出=%d, スキップ=%d, 分割=%d, "
-            "重複=%d, エラー=%d",
-            state.job_id,
-            state.total,
-            state.extracted,
-            state.skipped,
-            state.split_count,
-            state.duplicates,
-            state.errors,
-        )
 
     def _process_single_file(
         self,

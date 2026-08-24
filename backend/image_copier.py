@@ -26,7 +26,18 @@ def generate_dest_folder(source_folder: Path) -> Path:
 
     Returns:
         保存先フォルダのパス（例: ``C:/Photos/Family`` → ``C:/Photos/Family_face``）。
+
+    Raises:
+        ValueError: source_folder がドライブルート（``C:\\``）や UNC 共有ルート
+            （``\\\\server\\share``）の場合。これらは親が自分自身なので、
+            素直に処理すると ``\\\\server\\share_face`` のような別の共有／
+            ドライブを指してしまい、保存先を作れない。
     """
+    if source_folder.parent == source_folder or not source_folder.name:
+        raise ValueError(
+            "ドライブや共有フォルダのルートは指定できません。"
+            f"1 階層下のフォルダを指定してください: {source_folder}"
+        )
     return source_folder.parent / (source_folder.name + "_face")
 
 

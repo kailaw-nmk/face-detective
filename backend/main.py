@@ -9,13 +9,14 @@ import time
 from datetime import date, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from file_scanner import scan_folder
+from image_copier import generate_dest_folder
 from job_manager import JobManager
 
 # ---------------------------------------------------------------------------
@@ -189,6 +190,7 @@ class StartJobRequest(BaseModel):
     min_eye_ratio: float = 0.25
     min_face_score: float = 0.5
     yolo_confidence: float = 0.2
+    skip_processed: bool = False
 
 
 class StartJobResponse(BaseModel):
@@ -243,6 +245,13 @@ async def validate_path(request: ValidatePathRequest) -> ValidatePathResponse:
         )
 
     try:
+        generate_dest_folder(folder)
+    except ValueError as exc:
+        # ドライブ／共有のルートは保存先を作れない。ここで弾かないと
+        # 走査だけがディスク全体に走り、開始時に原因不明のエラーになる。
+        return ValidatePathResponse(valid=False, image_count=0, message=str(exc))
+
+    try:
         image_files = scan_folder(folder)
         count = len(image_files)
         return ValidatePathResponse(
@@ -272,22 +281,32 @@ async def start_job(request: StartJobRequest) -> StartJobResponse:
 
     Returns:
         生成されたジョブ ID と自動生成された保存先フォルダパス。
+
+    Raises:
+        HTTPException: source_folder がドライブ／共有のルートで保存先を
+            生成できない場合（400）。
     """
-    job_id, dest_folder = job_manager.register_job(
-        source_folder=request.source_folder,
-        threshold=request.threshold,
-        spread_split=request.spread_split,
-        trim_margins=request.trim_margins,
-        dedupe=request.dedupe,
-        dedupe_max_distance=request.dedupe_max_distance,
-        require_both_eyes=request.require_both_eyes,
-        min_eye_ratio=request.min_eye_ratio,
-        min_face_score=request.min_face_score,
-        yolo_confidence=request.yolo_confidence,
-    )
+    try:
+        job_id, dest_folder = job_manager.register_job(
+            source_folder=request.source_folder,
+            threshold=request.threshold,
+            spread_split=request.spread_split,
+            trim_margins=request.trim_margins,
+            dedupe=request.dedupe,
+            dedupe_max_distance=request.dedupe_max_distance,
+            require_both_eyes=request.require_both_eyes,
+            min_eye_ratio=request.min_eye_ratio,
+            min_face_score=request.min_face_score,
+            yolo_confidence=request.yolo_confidence,
+            skip_processed=request.skip_processed,
+        )
+    except ValueError as exc:
+        # ドライブ／共有のルート指定など、保存先を生成できないケース。
+        logger.warning("ジョブ登録を拒否しました: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     logger.info(
         "ジョブ登録: job_id=%s, src=%s, dest=%s, threshold=%.1f, spread_split=%s, "
-        "trim_margins=%s, dedupe=%s",
+        "trim_margins=%s, dedupe=%s, skip_processed=%s",
         job_id,
         request.source_folder,
         dest_folder,
@@ -295,6 +314,7 @@ async def start_job(request: StartJobRequest) -> StartJobResponse:
         request.spread_split,
         request.trim_margins,
         request.dedupe,
+        request.skip_processed,
     )
     return StartJobResponse(job_id=job_id, dest_folder=dest_folder)
 
@@ -379,6 +399,7 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str) -> None:
         min_eye_ratio=pending.get("min_eye_ratio", 0.25),
         min_face_score=pending.get("min_face_score", 0.5),
         yolo_confidence=pending.get("yolo_confidence", 0.2),
+        skip_processed=pending.get("skip_processed", False),
     )
 
     logger.info("ジョブ実行開始: job_id=%s", job_id)

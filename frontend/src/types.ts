@@ -13,6 +13,7 @@ export type ProgressMessage = {
   errors: number
   split_count?: number
   duplicates?: number
+  already_processed?: number
 }
 
 /** 処理完了メッセージ */
@@ -24,6 +25,7 @@ export type CompleteMessage = {
   errors: number
   split_count?: number
   duplicates?: number
+  already_processed?: number
   error_files: string[]
 }
 

@@ -44,6 +44,13 @@ function ProgressPanel({ progress }: ProgressPanelProps) {
         </div>
       </div>
 
+      {/* 処理済みスキップの件数（あった場合のみ） */}
+      {(progress?.already_processed ?? 0) > 0 && (
+        <p className="text-xs text-gray-500">
+          処理済みのため {progress?.already_processed ?? 0} 件を除外しました
+        </p>
+      )}
+
       {/* 現在処理中ファイル */}
       <div className="space-y-1">
         <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">現在処理中</p>

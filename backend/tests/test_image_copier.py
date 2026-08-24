@@ -52,6 +52,28 @@ class TestGenerateDestFolder:
         result = generate_dest_folder(source)
         assert result.parent == source.parent
 
+    def test_unc_share_path(self) -> None:
+        """UNC パスでも同階層に _face フォルダが生成されることを確認する。"""
+        source = Path(r"\\192.168.0.12\homes\admin\AI_NAS\Images_library")
+        result = generate_dest_folder(source)
+        assert result == Path(
+            r"\\192.168.0.12\homes\admin\AI_NAS\Images_library_face"
+        )
+
+    def test_rejects_unc_share_root(self) -> None:
+        """UNC 共有ルートを指定すると ValueError になることを確認する。
+
+        ``\\\\server\\share`` の親は自分自身なので、素直に処理すると
+        ``\\\\server\\share_face`` という存在しない別共有を指してしまう。
+        """
+        with pytest.raises(ValueError):
+            generate_dest_folder(Path(r"\\192.168.0.12\homes"))
+
+    def test_rejects_drive_root(self) -> None:
+        """ドライブルートを指定すると ValueError になることを確認する。"""
+        with pytest.raises(ValueError):
+            generate_dest_folder(Path("C:/"))
+
 
 class TestCopyImageBasic:
     """基本的なファイルコピー動作を検証するテスト群。"""

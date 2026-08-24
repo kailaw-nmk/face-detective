@@ -20,6 +20,7 @@ interface SettingsFormProps {
     trimMargins: boolean,
     dedupe: boolean,
     requireBothEyes: boolean,
+    skipProcessed: boolean,
     advanced: AdvancedSettings,
   ) => void
   /** フォームを無効化するフラグ（スキャン中など） */
@@ -62,6 +63,9 @@ function SettingsForm({ onStart, disabled }: SettingsFormProps) {
   })
   const [requireBothEyes, setRequireBothEyes] = useState(() => {
     return localStorage.getItem('face-detective-requireBothEyes') === 'true'
+  })
+  const [skipProcessed, setSkipProcessed] = useState(() => {
+    return localStorage.getItem('face-detective-skipProcessed') === 'true'
   })
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [minEyeRatio, setMinEyeRatio] = useState(() => {
@@ -130,11 +134,12 @@ function SettingsForm({ onStart, disabled }: SettingsFormProps) {
     localStorage.setItem('face-detective-dedupe', String(dedupe))
     localStorage.setItem('face-detective-dedupeMaxDistance', String(dedupeMaxDistance))
     localStorage.setItem('face-detective-requireBothEyes', String(requireBothEyes))
+    localStorage.setItem('face-detective-skipProcessed', String(skipProcessed))
     localStorage.setItem('face-detective-minEyeRatio', String(minEyeRatio))
     localStorage.setItem('face-detective-minFaceScore', String(minFaceScore))
     localStorage.setItem('face-detective-yoloConfidence', String(yoloConfidence))
 
-    onStart(sourcePath.trim(), threshold, spreadSplit, trimMargins, dedupe, requireBothEyes, {
+    onStart(sourcePath.trim(), threshold, spreadSplit, trimMargins, dedupe, requireBothEyes, skipProcessed, {
       minEyeRatio: minEyeRatio / 100,
       minFaceScore: minFaceScore / 100,
       yoloConfidence: yoloConfidence / 100,
@@ -282,6 +287,26 @@ function SettingsForm({ onStart, disabled }: SettingsFormProps) {
         </label>
         <p className="text-xs text-gray-400 ml-6">
           横顔や後ろ向きなど、両目が確認できない画像をスキップします
+        </p>
+      </div>
+
+      {/* 処理済みスキップオプション */}
+      <div className="space-y-1">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={skipProcessed}
+            onChange={(e) => setSkipProcessed(e.target.checked)}
+            disabled={disabled}
+            className="w-4 h-4 text-blue-500 rounded border-gray-300 focus:ring-blue-500 disabled:cursor-not-allowed"
+          />
+          <span className="text-sm font-medium text-gray-700">処理済み画像をスキップ</span>
+        </label>
+        <p className="text-xs text-gray-400 ml-6">
+          過去のスキャンで処理済みの画像を飛ばし、新しく追加された画像だけを処理します。記録は保存先の .processed フォルダに残るため、全部やり直したいときは保存先フォルダごと削除してください。上の設定を 1 つでも変えると記録は別扱いになり、全件が処理し直されます
+        </p>
+        <p className="text-xs text-gray-400 ml-6">
+          重複除外と併用する場合、スキップされた画像は重複判定の対象外になるため、過去に処理した画像との重複は検出されません
         </p>
       </div>
 

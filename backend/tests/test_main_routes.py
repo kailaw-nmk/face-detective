@@ -191,3 +191,72 @@ def test_start_defaults_dedupe_to_disabled(
     job_id = resp.json()["job_id"]
     assert job_manager._pending[job_id]["dedupe"] is False
     assert job_manager._pending[job_id]["dedupe_max_distance"] == 0
+
+
+@pytest.mark.parametrize("prefix", PREFIXES)
+def test_start_accepts_skip_processed(
+    client: TestClient, tmp_path, prefix: str
+) -> None:
+    """POST /api/start が skip_processed 設定を受け取り pending に保持すること。"""
+    from main import job_manager
+
+    resp = client.post(
+        f"{prefix}/api/start",
+        json={
+            "source_folder": str(tmp_path),
+            "threshold": 5.0,
+            "skip_processed": True,
+        },
+    )
+
+    assert resp.status_code == 200
+    job_id = resp.json()["job_id"]
+    assert job_manager._pending[job_id]["skip_processed"] is True
+
+
+@pytest.mark.parametrize("prefix", PREFIXES)
+def test_start_defaults_skip_processed_to_disabled(
+    client: TestClient, tmp_path, prefix: str
+) -> None:
+    """skip_processed を省略した場合は無効になること（後方互換）。"""
+    from main import job_manager
+
+    resp = client.post(
+        f"{prefix}/api/start",
+        json={"source_folder": str(tmp_path), "threshold": 5.0},
+    )
+
+    assert resp.status_code == 200
+    job_id = resp.json()["job_id"]
+    assert job_manager._pending[job_id]["skip_processed"] is False
+
+
+def test_validate_path_rejects_drive_root(client: TestClient) -> None:
+    """ドライブルートを指定すると valid=False と案内メッセージが返ること。
+
+    保存先を作れないパスをここで弾かないと、スキャン開始時に
+    500 エラーになって利用者に理由が伝わらない。
+    """
+    root = Path(Path.cwd().anchor)
+
+    resp = client.post("/api/validate-path", json={"path": str(root)})
+
+    assert resp.status_code == 200
+    assert resp.json()["valid"] is False
+    assert "ルート" in resp.json()["message"]
+
+
+def test_start_rejects_drive_root(client: TestClient) -> None:
+    """ドライブルートで開始しようとすると 400 で理由が返ること。
+
+    UI は検証を通さないと開始できないが、API を直接叩かれた場合に
+    500 ではなく理由の分かる応答を返す。
+    """
+    root = Path(Path.cwd().anchor)
+
+    resp = client.post(
+        "/api/start", json={"source_folder": str(root), "threshold": 5.0}
+    )
+
+    assert resp.status_code == 400
+    assert "ルート" in resp.json()["detail"]
